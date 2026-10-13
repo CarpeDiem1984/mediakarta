@@ -116,8 +116,8 @@
   }
   function audience(o) {
     if (!o) return null;
-    if (o.subscribers != null) return { n: o.subscribers, t: shortNum(o.subscribers) + ' подписчиков', at: o.subscribers_at };
-    if (o.visits != null) return { n: o.visits, t: shortNum(o.visits) + ' визитов/мес', at: o.visits_at };
+    if (o.subscribers != null) return { n: o.subscribers, s: shortNum(o.subscribers), u: 'подписч.', t: shortNum(o.subscribers) + ' подписчиков', at: o.subscribers_at };
+    if (o.visits != null) return { n: o.visits, s: shortNum(o.visits), u: 'визитов/мес', t: shortNum(o.visits) + ' визитов/мес', at: o.visits_at };
     return null;
   }
   const staleStat = at => at && Date.now() - new Date(at) > 180 * 864e5;
@@ -593,8 +593,8 @@
     <button class="btn ghost sm" @click="reset">Сбросить всё</button>
   </div>
 
-  <div class="table">
-    <div class="thead ogrid"><span></span><span>Издание</span><span>Тип</span><span>Тематики</span><span>Tier</span><span>Люди</span><span>Последний питч</span></div>
+  <div class="table" :class="{'with-aud': s.stage4}">
+    <div class="thead ogrid"><span></span><span>Издание</span><span>Тип</span><span>Тематики</span><span>Tier</span><span v-if="s.stage4" class="th-sort" :class="{on: sort==='audience'}" role="button" tabindex="0" title="Сортировать по охвату" @click="sort = sort==='audience' ? 'tier' : 'audience'" @keydown.enter="sort = sort==='audience' ? 'tier' : 'audience'">Охват{{ sort==='audience' ? ' ↓' : '' }}</span><span>Люди</span><span>Последний питч</span></div>
     <div v-if="!result.rows.length" class="empty">Ничего не нашлось. Попробуйте убрать фильтры или <a href="#" @click.prevent="newContact()">добавьте журналиста</a>.</div>
     <div v-for="r in visible" :key="r.o.id ?? 'none'" class="ogroup" :class="{open: isOpen(r)}">
       <div class="orow ogrid" @click="toggle(r)">
@@ -603,12 +603,13 @@
           <div class="omark">{{ r.o.name.slice(0,1).toUpperCase() }}</div>
           <div style="min-width:0">
             <div class="oname ellipsis"><template v-for="(p,i) in hl(r.o.name)" :key="i"><mark v-if="p.m">{{ p.t }}</mark><template v-else>{{ p.t }}</template></template></div>
-            <div class="small muted ellipsis">{{ (r.o.geo||[]).join(', ') || '—' }}<template v-if="aud(r.o)"> · <span :title="aud(r.o).at ? 'обновлено ' + fmtDate(aud(r.o).at) : ''" :style="staleStat(aud(r.o).at) ? 'text-decoration: line-through dotted' : ''">{{ aud(r.o).t }}</span></template><template v-else-if="r.o.reach"> · {{ r.o.reach }}</template></div>
+            <div class="small muted ellipsis">{{ (r.o.geo||[]).join(', ') || '—' }}<template v-if="!s.stage4 && r.o.reach"> · {{ r.o.reach }}</template></div>
           </div>
         </div>
         <div><span :class="typeChip(r.o.type)">{{ typeLabel(r.o) }}</span></div>
         <div class="small ellipsis" style="color:var(--text-2)">{{ (r.o.topics||[]).slice(0,3).join(', ') }}</div>
         <div class="mono small">{{ r.o.tier || '—' }}</div>
+        <div v-if="s.stage4" class="aud-cell" :class="{stale: aud(r.o) && staleStat(aud(r.o).at)}" :title="aud(r.o) ? aud(r.o).t + (aud(r.o).at ? ' · обновлено ' + fmtDate(aud(r.o).at) : '') : 'нет данных'"><template v-if="aud(r.o)"><b>{{ aud(r.o).s }}</b><span class="small muted">{{ aud(r.o).u }}</span></template><span v-else class="muted">—</span></div>
         <div class="mono small">{{ r.expand && r.people.length !== r.total ? r.people.length + '/' + r.total : r.total }}</div>
         <div class="small ellipsis" style="color:var(--text-2)">{{ lastText(r.last) }}</div>
       </div>

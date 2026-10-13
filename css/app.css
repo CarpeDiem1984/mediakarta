@@ -299,6 +299,13 @@ button, input, select, textarea { font: inherit; color: inherit; }
 [data-theme="console"] .table { border: 1px solid var(--line); background: #121317; overflow: hidden; }
 .thead, .orow, .jrow, .trow { display: grid; gap: 12px; align-items: center; }
 .ogrid { grid-template-columns: 32px minmax(0, 2.4fr) 124px minmax(0, 1.6fr) 44px 56px minmax(0, 1.2fr); }
+.with-aud .ogrid { grid-template-columns: 32px minmax(0, 2.4fr) 124px minmax(0, 1.5fr) 44px 92px 56px minmax(0, 1.1fr); }
+.th-sort { cursor: pointer; user-select: none; }
+.th-sort:hover, .th-sort.on { color: var(--accent); }
+.aud-cell { display: flex; flex-direction: column; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.aud-cell b { font-weight: 600; font-size: 13px; }
+.aud-cell .small { font-size: 11px; }
+.aud-cell.stale b { text-decoration: line-through dotted; opacity: .7; }
 .jgrid { grid-template-columns: 32px minmax(0, 2.2fr) 120px minmax(0, 1.7fr) minmax(0, 1.3fr) 32px; }
 .thead { padding: 8px 12px; font-size: 12px; color: var(--muted); }
 [data-theme="paper"] .thead { font-family: var(--font-mono); font-size: 11px; text-transform: uppercase; letter-spacing: .8px; border-bottom: 2px solid var(--line-strong); }
