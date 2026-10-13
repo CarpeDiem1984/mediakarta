@@ -1500,8 +1500,15 @@
         S.rev; return D.campaigns.filter(c => !c.archived).slice(0, 5).map(c => ({ c, f: funnel(ix().itemsByCampaign.get(c.id) || []) }));
       },
       pubFeed() {
-        S.rev; return this.pubs.map(p => { const c = ix().contactById.get(p.contact_id); return c && !c.deleted_at ? { p, c, o: ix().outletById.get(c.outlet_id) } : null; })
-          .filter(x => x && (!this.pubsPool || D.favorites.has(x.c.id))).slice(0, 12);
+        S.rev; const by = new Map();
+        for (const p of this.pubs) {
+          const c = ix().contactById.get(p.contact_id); if (!c || c.deleted_at) continue;
+          if (this.pubsPool && !D.favorites.has(c.id)) continue;
+          const k = p.url.split('?')[0]; let x = by.get(k);
+          if (!x) { x = { p, people: [], o: ix().outletById.get(c.outlet_id) }; by.set(k, x); }
+          if (!x.people.some(y => y.id === c.id)) x.people.push(c);
+        }
+        return [...by.values()].slice(0, 12);
       },
       hello() { const h = new Date().getHours(); return h < 6 ? 'Доброй ночи' : h < 12 ? 'Доброе утро' : h < 18 ? 'Добрый день' : 'Добрый вечер'; },
     },
@@ -1536,7 +1543,7 @@
         <label class="small row" style="gap:6px; cursor:pointer"><input type="checkbox" v-model="pubsPool"> только мой пул</label></div>
       <div v-for="x in pubFeed" :key="x.p.id" class="note">
         <a :href="x.p.url" target="_blank" rel="noopener" style="font-weight:500">{{ x.p.title || x.p.url }}</a>
-        <div class="meta"><a href="#" @click.prevent="openContact(x.c.id)">{{ x.c.name }}</a>{{ x.o ? ' · ' + x.o.name : '' }} · {{ fmtShort(x.p.published_at) }}</div>
+        <div class="meta"><template v-for="(c, i) in x.people" :key="c.id">{{ i ? ', ' : '' }}<a href="#" @click.prevent="openContact(c.id)">{{ c.name }}</a></template>{{ x.o ? ' · ' + x.o.name : '' }} · {{ fmtShort(x.p.published_at) }}</div>
       </div>
       <div v-if="!pubFeed.length" class="muted small">{{ pubsPool ? 'У журналистов из вашего пула свежих материалов не нашлось.' : 'Пока пусто: поиск идёт по четвергам.' }}</div>
     </div>
