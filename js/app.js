@@ -23,7 +23,7 @@
 
   // ====================== хранилище ======================
   const S = reactive({
-    mode: api.mode, booting: true, tick: Date.now(), stage2: false, stage3: false, clientId: null, listId: null, eventId: null, reportCampaignId: null, reportClientId: null, user: null, me: null, loadingPct: 0, loadError: '',
+    mode: api.mode, booting: true, tick: Date.now(), stage2: false, stage3: false, stage4: false, clientId: null, listId: null, eventId: null, reportCampaignId: null, reportClientId: null, user: null, me: null, loadingPct: 0, loadError: '',
     view: 'map', campaignId: null, drawer: null, modal: null, toast: '', rev: 0,
   });
   const D = { outlets: [], contacts: [], campaigns: [], items: [], profiles: [], favorites: new Set(), dict: { topic: [], tag: [] }, settings: { collision_days: 7 }, moves: [], ignores: [], clients: [], lists: [], members: [], sends: [], notifs: [], tasks: [], events: [], guests: [] };
@@ -107,6 +107,20 @@
     return null;
   }
   const pct = (a, b) => b ? Math.round(a / b * 100) : 0;
+  const PLATFORM = { telegram: 'Telegram', youtube: 'YouTube', vk: 'VK', instagram: 'Instagram', web: 'сайт' };
+  function shortNum(n) {
+    if (n == null) return '';
+    if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1).replace('.', ',').replace(',0', '') + ' млн';
+    if (n >= 1e3) return Math.round(n / 1e3) + ' тыс.';
+    return String(n);
+  }
+  function audience(o) {
+    if (!o) return null;
+    if (o.subscribers != null) return { n: o.subscribers, t: shortNum(o.subscribers) + ' подписчиков', at: o.subscribers_at };
+    if (o.visits != null) return { n: o.visits, t: shortNum(o.visits) + ' визитов/мес', at: o.visits_at };
+    return null;
+  }
+  const staleStat = at => at && Date.now() - new Date(at) > 180 * 864e5;
 
   // ====================== утилиты ======================
   const pad = n => String(n).padStart(2, '0');
@@ -159,6 +173,23 @@
   function askNotifyPermission() {
     try { if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission(); } catch (e) {}
   }
+  async function setStatLocal(outletId, metric, value, source) {
+    await api.setStat(outletId, metric, value, source);
+    const o = ix().outletById.get(outletId); const at = new Date().toISOString();
+    if (o) { if (metric === 'subscribers') Object.assign(o, { subscribers: value, subscribers_at: at }); else Object.assign(o, { visits: value, visits_at: at }); Object.assign(o, { stats_source: source, stats_error: null }); }
+    bump();
+  }
+  // Мост для обновления статистики через Chrome (Instagram, SimilarWeb): вызывается из консоли страницы
+  window.MK_STATS = {
+    list(kind) {
+      const old = at => !at || Date.now() - new Date(at) > 25 * 864e5;
+      if (kind === 'instagram') return D.outlets.filter(o => /instagram\.com\//i.test(o.website || '') && old(o.subscribers_at)).map(o => ({ id: o.id, name: o.name, url: o.website }));
+      if (kind === 'similarweb') return D.outlets.filter(o => o.type === 'СМИ' && (o.tier || 9) <= (+((D.settings || {}).sw_max_tier) || 1) && safeUrl(o.website) && !/t\.me|youtube|vk\.com|instagram/i.test(o.website) && old(o.visits_at))
+        .map(o => ({ id: o.id, name: o.name, domain: safeUrl(o.website).replace(/^https?:\/\/(www\.)?/, '').split('/')[0] }));
+      return [];
+    },
+    async set(id, metric, value, source) { await setStatLocal(id, metric, value, source || 'chrome'); return true; },
+  };
   function birthdayText(c) {
     if (!c.birthday_day || !c.birthday_month) return '';
     return c.birthday_day + ' ' + MONTHS[c.birthday_month - 1] + (c.birthday_year ? ' ' + c.birthday_year : '');
@@ -216,6 +247,7 @@
       D.settings = Object.assign({ collision_days: 7 }, r.settings);
       D.moves = markRaw(r.moves || []); D.ignores = markRaw(r.ignores || []);
       S.stage2 = !!r.stage2; S.stage3 = !!r.stage3;
+      S.stage4 = String((r.settings || {}).schema_version || '') >= '2.0.4';
       D.events = markRaw(r.events || []); D.guests = markRaw(r.guests || []);
       D.clients = markRaw(r.clients || []); D.lists = markRaw(r.lists || []); D.members = markRaw(r.members || []);
       D.sends = markRaw(r.sends || []); D.notifs = markRaw(r.notifs || []); D.tasks = markRaw(r.tasks || []);
@@ -223,7 +255,7 @@
       S.me = r.me; applyTheme(S.me.theme);
       rebuildIndex(); bump();
       if (S.view === 'map' && !D.contacts.length && isAdmin()) S.view = 'admin';
-      S.needsUpdate = r.needsUpdate || '';
+      S.needsUpdate = r.needsUpdate || (S.stage3 && !S.stage4 ? 'update-2.0-stage4.sql' : '');
       if (isAdmin() && !r.needsUpdate) api.purgeTrash().catch(() => {});
     } catch (e) { console.error(e); S.loadError = e.message || String(e); }
   }
@@ -405,7 +437,7 @@
   const MapView = {
     mixins: [helpers], components: { Ic },
     data: () => ({
-      q: '', qd: '', type: '', topic: '', geo: '', tier: '', relation: '', pool: false, stale: '', verified: '', sort: 'tier',
+      q: '', qd: '', type: '', topic: '', geo: '', tier: '', relation: '', pool: false, stale: '', verified: '', sort: 'tier', minAud: '',
       limit: PAGE, open: {}, selected: new Set(), selRev: 0,
     }),
     created() {
@@ -414,11 +446,11 @@
     },
     watch: {
       q(v) { clearTimeout(this._t); this._t = setTimeout(() => { this.qd = v; this.limit = PAGE; }, 160); },
-      filtersKey() { this.limit = PAGE; try { sessionStorage.setItem('mk-map', JSON.stringify({ q: this.q, type: this.type, topic: this.topic, geo: this.geo, tier: this.tier, relation: this.relation, pool: this.pool, stale: this.stale, verified: this.verified, sort: this.sort })); } catch (e) {} },
+      filtersKey() { this.limit = PAGE; try { sessionStorage.setItem('mk-map', JSON.stringify({ q: this.q, type: this.type, topic: this.topic, geo: this.geo, tier: this.tier, relation: this.relation, pool: this.pool, stale: this.stale, verified: this.verified, sort: this.sort, minAud: this.minAud })); } catch (e) {} },
     },
     computed: {
       s: () => S,
-      filtersKey() { return [this.q, this.type, this.topic, this.geo, this.tier, this.relation, this.pool, this.stale, this.verified, this.sort].join('|'); },
+      filtersKey() { return [this.q, this.type, this.topic, this.geo, this.tier, this.relation, this.pool, this.stale, this.verified, this.sort, this.minAud].join('|'); },
       topics() { S.rev; return D.dict.topic; },
       geos() {
         S.rev; const c = new Map();
@@ -453,6 +485,7 @@
           if (this.type && o.type !== this.type) continue;
           if (this.geo && !(o.geo || []).includes(this.geo)) continue;
           if (this.tier && String(o.tier) !== this.tier) continue;
+          if (this.minAud && !((audience(o) || {}).n >= +this.minAud)) continue;
           const people = o.id === null ? X.orphan : (X.byOutlet.get(o.id) || []);
           const outletTopic = !this.topic || (o.topics || []).includes(this.topic);
           const oMatch = words.length && match(o._s);
@@ -469,12 +502,13 @@
         if (this.sort === 'name') out.sort((a, b) => a.o.name.localeCompare(b.o.name, 'ru'));
         else if (this.sort === 'recent') out.sort((a, b) => ((b.last && b.last.sent_at) || '').localeCompare((a.last && a.last.sent_at) || ''));
         else if (this.sort === 'people') out.sort((a, b) => b.total - a.total);
+        else if (this.sort === 'audience') out.sort((a, b) => ((audience(b.o) || {}).n || 0) - ((audience(a.o) || {}).n || 0));
         else out.sort((a, b) => ((a.o.tier || 9) - (b.o.tier || 9)) || (b.total - a.total));
         return { rows: out, totalContacts };
       },
       visible() { return this.result.rows.slice(0, this.limit); },
       selCount() { this.selRev; return this.selected.size; },
-      activeFilters() { return [this.type, this.topic, this.geo, this.tier, this.relation, this.pool, this.stale, this.verified].filter(Boolean).length; },
+      activeFilters() { return [this.type, this.topic, this.geo, this.tier, this.relation, this.pool, this.stale, this.verified, this.minAud].filter(Boolean).length; },
       chips() {
         const c = [], L = { warm: 'Тёплые', neutral: 'Нейтральные', cold: 'Негатив' }, St = { 30: 'Не трогали 30+ дней', 60: 'Не трогали 60+ дней', 90: 'Не трогали 90+ дней', never: 'Ещё не питчили' };
         if (this.q) c.push({ k: 'q', l: 'Поиск: «' + this.q + '»' });
@@ -482,6 +516,7 @@
         if (this.topic) c.push({ k: 'topic', l: 'Тематика: ' + this.topic });
         if (this.geo) c.push({ k: 'geo', l: 'География: ' + this.geo });
         if (this.tier) c.push({ k: 'tier', l: 'Tier ' + this.tier });
+        if (this.minAud) c.push({ k: 'minAud', l: 'Аудитория от ' + shortNum(+this.minAud) });
         if (this.relation) c.push({ k: 'relation', l: L[this.relation] });
         if (this.stale) c.push({ k: 'stale', l: St[this.stale] });
         if (this.verified) c.push({ k: 'verified', l: { fresh: 'Проверены за год', old: 'Не проверены', inactive: 'Помечены «не работает»' }[this.verified] });
@@ -510,7 +545,8 @@
       toList() { S.modal = { kind: 'addToList', ids: [...this.selected], done: () => this.clearSel() }; },
       toEvent() { S.modal = { kind: 'addToEvent', ids: [...this.selected], done: () => this.clearSel() }; },
       badge(id) { return respBadge(ix().respByContact.get(id)); },
-      reset() { Object.assign(this, { q: '', qd: '', type: '', topic: '', geo: '', tier: '', relation: '', pool: false, stale: '', verified: '' }); },
+      aud: o => audience(o), staleStat,
+      reset() { Object.assign(this, { q: '', qd: '', type: '', topic: '', geo: '', tier: '', relation: '', pool: false, stale: '', verified: '', minAud: '' }); },
       toCampaign() { S.modal = { kind: 'addToCampaign', ids: [...this.selected], done: () => this.clearSel() }; },
       copyEmails() {
         const ems = [...this.selected].map(id => ix().contactById.get(id)).filter(Boolean).map(c => (c.emails || [])[0]).filter(Boolean);
@@ -549,7 +585,8 @@
     <select class="fselect" :class="{set: stale}" v-model="stale" aria-label="Последний контакт"><option value="">Последний питч</option><option value="30">Не трогали 30+ дней</option><option value="60">Не трогали 60+ дней</option><option value="90">Не трогали 90+ дней</option><option value="never">Ещё не питчили</option></select>
     <select class="fselect" :class="{set: verified}" v-model="verified" aria-label="Актуальность"><option value="">Актуальность</option><option value="fresh">Проверены за год</option><option value="old">Не проверены</option><option value="inactive">Помечены «не работает»</option></select>
     <label class="toggle"><input type="checkbox" v-model="pool"> Мой пул</label>
-    <select class="fselect" v-model="sort" aria-label="Сортировка"><option value="tier">Сначала Tier 1</option><option value="people">Больше контактов</option><option value="recent">Недавно питчили</option><option value="name">По алфавиту</option></select>
+    <select v-if="s.stage4" class="fselect" :class="{set: minAud}" v-model="minAud" aria-label="Аудитория"><option value="">Аудитория</option><option value="10000">от 10 тыс.</option><option value="50000">от 50 тыс.</option><option value="100000">от 100 тыс.</option><option value="500000">от 500 тыс.</option><option value="1000000">от 1 млн</option></select>
+    <select class="fselect" v-model="sort" aria-label="Сортировка"><option value="tier">Сначала Tier 1</option><option value="people">Больше контактов</option><option v-if="s.stage4" value="audience">Больше аудитория</option><option value="recent">Недавно питчили</option><option value="name">По алфавиту</option></select>
   </div>
   <div v-if="chips.length" class="row wrap" style="margin:-4px 0 14px">
     <span v-for="ch in chips" :key="ch.k" class="chip x on" role="button" tabindex="0" @click="clearChip(ch.k)" @keydown.enter="clearChip(ch.k)" :title="'Убрать фильтр'">{{ ch.l }} ✕</span>
@@ -566,7 +603,7 @@
           <div class="omark">{{ r.o.name.slice(0,1).toUpperCase() }}</div>
           <div style="min-width:0">
             <div class="oname ellipsis"><template v-for="(p,i) in hl(r.o.name)" :key="i"><mark v-if="p.m">{{ p.t }}</mark><template v-else>{{ p.t }}</template></template></div>
-            <div class="small muted ellipsis">{{ (r.o.geo||[]).join(', ') || '—' }}<template v-if="r.o.reach"> · {{ r.o.reach }}</template></div>
+            <div class="small muted ellipsis">{{ (r.o.geo||[]).join(', ') || '—' }}<template v-if="aud(r.o)"> · <span :title="aud(r.o).at ? 'обновлено ' + fmtDate(aud(r.o).at) : ''" :style="staleStat(aud(r.o).at) ? 'text-decoration: line-through dotted' : ''">{{ aud(r.o).t }}</span></template><template v-else-if="r.o.reach"> · {{ r.o.reach }}</template></div>
           </div>
         </div>
         <div><span :class="typeChip(r.o.type)">{{ typeLabel(r.o) }}</span></div>
@@ -622,7 +659,7 @@
   const ContactDrawer = {
     mixins: [helpers], components: { Ic },
     props: { id: Number },
-    data: () => ({ notes: [], noteText: '', editComment: false, commentDraft: '', audit: null, showAudit: false, busy: false, mq: null }),
+    data: () => ({ notes: [], pubs: [], noteText: '', editComment: false, commentDraft: '', audit: null, showAudit: false, busy: false, mq: null }),
     computed: {
       c() { S.rev; return ix().contactById.get(this.id); },
       o() { return this.c && ix().outletById.get(this.c.outlet_id); },
@@ -646,10 +683,13 @@
     watch: { id: { immediate: true, handler() { this.load(); } } },
     methods: {
       async load() {
-        this.notes = []; this.editComment = false; this.audit = null; this.showAudit = false;
+        this.notes = []; this.pubs = []; this.editComment = false; this.audit = null; this.showAudit = false;
         if (!this.id) return;
         try { this.notes = await api.notes(this.id); } catch (e) { console.error(e); }
+        if (S.stage4) { try { this.pubs = await api.contactPubs(this.id); } catch (e) { console.error(e); } }
       },
+      async hidePub(p) { await safe(() => api.hidePub(p.id)); this.pubs = this.pubs.filter(x => x.id !== p.id); toast('Скрыто. Больше не покажем'); },
+      async usePub(p) { await safe(() => actions.saveContact(this.c.id, { last_pub_url: p.url, last_pub_date: (p.published_at || new Date().toISOString()).slice(0, 10) }), 'Отмечено как последняя публикация'); },
       close() { S.drawer = null; },
       async setRel(r) { await safe(() => actions.saveContact(this.c.id, { relation: r })); },
       async toggleTag(t) {
@@ -803,6 +843,14 @@
     <div v-if="!notes.length" class="muted small">Заметок нет.</div>
   </section>
 
+  <section v-if="pubs.length">
+    <h3 class="section-title">Свежие материалы <span class="muted small" style="font-weight:400">· нашлись автоматически</span></h3>
+    <div v-for="p in pubs" :key="p.id" class="note">
+      <a :href="safeUrl(p.url)" target="_blank" rel="noopener">{{ p.title || p.url }}</a>
+      <div class="row small"><span class="meta grow">{{ p.published_at ? fmtDate(p.published_at) : '' }}</span>
+        <a href="#" @click.prevent="usePub(p)">это последняя</a><a href="#" class="muted" @click.prevent="hidePub(p)">не его материал</a></div>
+    </div>
+  </section>
   <section>
     <h3 class="section-title">Питчи</h3>
     <div v-for="p in pitches" :key="p.it.id" class="note row" style="cursor:pointer" @click="openCampaign(p.camp.id)">
@@ -828,9 +876,20 @@
   const OutletDrawer = {
     mixins: [helpers], components: { Ic },
     props: { id: Number },
+    data: () => ({ hist: [], manual: '' }),
+    watch: { id: { immediate: true, async handler() { this.hist = []; this.manual = ''; if (S.stage4 && this.id) { try { this.hist = await api.outletStats(this.id); } catch (e) {} } } } },
     computed: {
       o() { S.rev; return ix().outletById.get(this.id); },
       people() { S.rev; return ix().byOutlet.get(this.id) || []; },
+      stage4: () => S.stage4,
+      isWeb() { const p = this.o.platform || (this.o.website && !/t\.me|telegram|youtube|vk\.com|instagram/i.test(this.o.website) ? 'web' : null); return this.o.type === 'СМИ' ? p !== 'telegram' && p !== 'youtube' && p !== 'vk' && p !== 'instagram' : p === 'web'; },
+      swUrl() { const w = safeUrl(this.o.website); if (!w) return null; const d = w.replace(/^https?:\/\/(www\.)?/, '').split('/')[0]; return 'https://www.similarweb.com/website/' + d + '/'; },
+      statSrc() { return { auto: 'автоматически', chrome: 'через Chrome', manual: 'вручную', mediakit: 'из медиакита' }[this.o.stats_source] || 'источник не указан'; },
+      delta() {
+        const m = this.isWeb ? 'visits' : 'subscribers'; const h = this.hist.filter(x => x.metric === m); if (h.length < 2) return 0;
+        const cur = h[0], old = h.find(x => Date.now() - new Date(x.at) > 25 * 864e5) || h[h.length - 1];
+        return old && old.value ? Math.round((cur.value - old.value) / old.value * 1000) / 10 : 0;
+      },
       former() {
         S.rev; return (ix().movedFromOutlet.get(this.id) || []).map(m => ({ m, c: ix().contactById.get(m.contact_id) })).filter(x => x.c && x.c.outlet_id !== this.id);
       },
@@ -849,6 +908,12 @@
         await safe(() => actions.trashRow('outlets', 'outlets', this.o.id, 'Издание')); S.drawer = null;
       },
       toCampaign() { S.modal = { kind: 'addToCampaign', ids: this.people.map(c => c.id) }; },
+      staleStat,
+      async saveStat() {
+        const v = parseInt(String(this.manual).replace(/\D/g, ''), 10); if (!v) return;
+        await safe(() => setStatLocal(this.o.id, this.isWeb ? 'visits' : 'subscribers', v, 'manual'), 'Записано');
+        this.manual = ''; this.hist = await api.outletStats(this.o.id);
+      },
     },
 
     template: `
@@ -869,7 +934,17 @@
   </div>
   <div class="kv">
     <span class="k">Сайт</span><span class="v"><a v-if="safeUrl(o.website)" :href="safeUrl(o.website)" target="_blank" rel="noopener">{{ o.website }}</a><span v-else class="muted">—</span></span>
-    <span class="k">Охват</span><span class="v">{{ o.reach || '—' }}</span>
+    <template v-if="stage4">
+      <span class="k">{{ isWeb ? 'Визиты/мес' : 'Подписчики' }}</span>
+      <span class="v"><template v-if="isWeb ? o.visits != null : o.subscribers != null"><b>{{ (isWeb ? o.visits : o.subscribers).toLocaleString('ru') }}</b>
+          <span v-if="delta" :style="{color: delta > 0 ? 'var(--warm)' : 'var(--cold)'}">&nbsp;{{ delta > 0 ? '+' : '' }}{{ delta }}% за месяц</span>
+          <div class="small muted">{{ statSrc }} · {{ fmtDate(isWeb ? o.visits_at : o.subscribers_at) }}<template v-if="staleStat(isWeb ? o.visits_at : o.subscribers_at)"> · устарело</template></div></template>
+        <span v-else class="muted">нет данных</span>
+        <div class="row" style="margin-top:4px"><input class="input" style="height:30px; width:140px" v-model="manual" :placeholder="isWeb ? 'визитов в месяц' : 'подписчиков'" inputmode="numeric" :aria-label="isWeb ? 'Визитов в месяц' : 'Подписчиков'"><button class="btn sm" :disabled="!manual" @click="saveStat">Записать</button>
+          <a v-if="isWeb && swUrl" :href="swUrl" target="_blank" rel="noopener" class="small">SimilarWeb ↗</a></div>
+        <div v-if="o.stats_error" class="small" style="color:var(--danger); margin-top:4px">Автообновление: {{ o.stats_error }}</div></span>
+    </template>
+    <template v-else><span class="k">Охват</span><span class="v">{{ o.reach || '—' }}</span></template>
     <span class="k">Тематики</span><span class="v">{{ (o.topics||[]).join(', ') || '—' }}</span>
     <span class="k">Источники</span><span class="v small">{{ (o.sources||[]).join(', ') || 'добавлено вручную' }}</span>
   </div>
@@ -2706,9 +2781,77 @@
 <div v-else class="empty">Мероприятие не найдено. <a href="#" @click.prevent="go('events')">К списку</a></div>`,
   };
 
+  // ====================== 2.0 · СТАТИСТИКА ПЛОЩАДОК (админ) ======================
+  const StatsAdmin = {
+    mixins: [helpers], components: { Ic },
+    data: () => ({ st: null, swTier: String((D.settings || {}).sw_max_tier || 1) }),
+    async created() { try { this.st = await api.settings(); } catch (e) { this.st = D.settings; } },
+    computed: {
+      repo() {
+        const h = location.hostname.match(/^([\w-]+)\.github\.io$/); const seg = location.pathname.split('/').filter(Boolean)[0];
+        return h && seg ? 'https://github.com/' + h[1] + '/' + seg : 'https://github.com';
+      },
+      plats() {
+        S.rev; const rows = {};
+        for (const o of D.outlets) {
+          const p = o.platform || 'нет ссылки'; const k = p === 'web' && o.type !== 'СМИ' ? 'web' : p;
+          rows[k] = rows[k] || { k, total: 0, data: 0, fresh: 0, err: 0 };
+          const r = rows[k]; r.total++;
+          const n = p === 'web' ? o.visits : o.subscribers, at = p === 'web' ? o.visits_at : o.subscribers_at;
+          if (n != null) r.data++; if (at && Date.now() - new Date(at) < 14 * 864e5) r.fresh++; if (o.stats_error) r.err++;
+        }
+        const order = ['telegram', 'youtube', 'vk', 'instagram', 'web', 'нет ссылки'];
+        return Object.values(rows).sort((a, b) => order.indexOf(a.k) - order.indexOf(b.k));
+      },
+      errors() { S.rev; return D.outlets.filter(o => o.stats_error).slice(0, 60); },
+      noLink() { S.rev; return D.outlets.filter(o => o.type !== 'СМИ' && !o.website); },
+      last() { return (this.st || {}).stats_last_run; }, lastPubs() { return (this.st || {}).pubs_last_run; },
+    },
+    methods: {
+      plabel(k) { return PLATFORM[k] || k; },
+      async saveSw() { await safe(() => api.setSetting('sw_max_tier', +this.swTier), 'Сохранено'); D.settings.sw_max_tier = +this.swTier; },
+      swCount() { S.rev; return window.MK_STATS.list('similarweb').length; },
+      igCount() { S.rev; return window.MK_STATS.list('instagram').length; },
+    },
+    template: `
+<div class="stack" style="gap:16px">
+  <div class="grid2">
+    <div class="card stack"><h2 class="h2" style="margin:0">Подписчики: автообновление</h2>
+      <div v-if="last && last.at">Последний запуск: <b>{{ fmtDate(last.at) }}</b> · обновлено {{ last.ok }}, ошибок {{ last.failed }}</div>
+      <div v-else class="muted">Ещё не запускалось. Каждый понедельник в 7:00 по Москве; сначала нужно один раз добавить ключи (см. ниже).</div>
+      <div class="small muted">Telegram, YouTube, VK — через GitHub Actions, бесплатно.</div>
+      <a class="small" :href="repo + '/actions/workflows/mediakarta-stats.yml'" target="_blank" rel="noopener">Открыть запуски на GitHub ↗</a></div>
+    <div class="card stack"><h2 class="h2" style="margin:0">Свежие публикации журналистов</h2>
+      <div v-if="lastPubs && lastPubs.at">Последний запуск: <b>{{ fmtDate(lastPubs.at) }}</b> · проверено {{ lastPubs.checked }}, найдено {{ lastPubs.found }}</div>
+      <div v-else class="muted">Ещё не запускалось. Каждый четверг в 7:00: ваш пул и Tier 1, до 400 человек за раз.</div>
+      <div class="small muted">Ищем материалы по имени журналиста на сайте его издания через Google News.</div></div>
+  </div>
+  <div class="card scroll-x" style="padding:0"><table class="tbl">
+    <thead><tr><th>Площадка</th><th>Всего</th><th>С цифрами</th><th>Обновлено за 2 недели</th><th>Ошибки</th></tr></thead>
+    <tbody><tr v-for="p in plats" :key="p.k"><td><b>{{ plabel(p.k) }}</b><div v-if="p.k==='web'" class="small muted">визиты/мес (SimilarWeb)</div><div v-else-if="p.k==='instagram'" class="small muted">через Chrome</div></td>
+      <td class="mono">{{ p.total }}</td><td class="mono">{{ p.data }}</td><td class="mono">{{ p.fresh }}</td><td class="mono">{{ p.err }}</td></tr></tbody></table></div>
+  <div class="card stack"><h2 class="h2" style="margin:0">Instagram и SimilarWeb (через ваш Chrome)</h2>
+    <div class="small">Сейчас ждут обновления: Instagram — <b>{{ igCount() }}</b>, сайты СМИ для SimilarWeb — <b>{{ swCount() }}</b>.</div>
+    <div class="row"><span class="small">SimilarWeb проверяем для СМИ</span><select class="select" style="width:160px; height:32px" v-model="swTier" aria-label="Tier для SimilarWeb"><option value="1">только Tier 1</option><option value="2">Tier 1 и 2</option><option value="3">Tier 1–3</option></select><button class="btn sm" @click="saveSw">Сохранить</button></div>
+    <div class="small muted">Обновление идёт задачей по расписанию через Claude в вашем Chrome, когда компьютер включён. Попросить вручную можно в чате: «обнови Instagram и SimilarWeb в Медиакарте».</div></div>
+  <div v-if="errors.length" class="card"><h2 class="h2">Не удалось обновить · {{ errors.length }}</h2>
+    <div v-for="o in errors" :key="o.id" class="note row" style="cursor:pointer" @click="openOutlet(o.id)"><span class="grow"><b>{{ o.name }}</b> <span class="small muted">{{ o.website }}</span></span><span class="small" style="color:var(--danger)">{{ o.stats_error }}</span></div></div>
+  <div v-if="noLink.length" class="card"><h2 class="h2">Новые медиа и блогеры без ссылки · {{ noLink.length }}</h2>
+    <div class="small muted" style="margin-bottom:6px">Без ссылки на канал подписчиков не посчитать. Откройте издание → «Изменить» → поле «Сайт / ссылка на канал».</div>
+    <div v-for="o in noLink.slice(0, 40)" :key="o.id" class="note" style="cursor:pointer" @click="openOutlet(o.id)">{{ o.name }} <span class="small muted">· {{ o.type }}</span></div>
+    <div v-if="noLink.length > 40" class="small muted">…и ещё {{ noLink.length - 40 }}</div></div>
+  <div class="card stack"><h2 class="h2" style="margin:0">Как включить автообновление (один раз)</h2>
+    <ol class="small" style="margin:0; padding-left:18px; line-height:1.7">
+      <li>Supabase → Project Settings → API Keys → создайте или скопируйте <b>Secret key</b> (sb_secret_…). Он даёт полный доступ к базе: никому не пересылайте и не вставляйте в код.</li>
+      <li>GitHub → <a :href="repo + '/settings/secrets/actions'" target="_blank" rel="noopener">Settings → Secrets and variables → Actions</a> → New repository secret. Добавьте: <code>SUPABASE_URL</code>, <code>SUPABASE_SERVICE_KEY</code>, по желанию <code>YOUTUBE_API_KEY</code> и <code>VK_TOKEN</code>.</li>
+      <li>GitHub → Actions → «Медиакарта · статистика» → Run workflow — первый запуск вручную.</li>
+    </ol></div>
+</div>`,
+  };
+
   // ====================== АДМИНКА ======================
   const AdminView = {
-    mixins: [helpers], components: { Ic, DupsView, TrashView },
+    mixins: [helpers], components: { Ic, DupsView, TrashView, StatsAdmin },
     data: () => ({ tab: 'users', newTopic: '', newTag: '', days: D.settings.collision_days || 7, perWeek: D.settings.verify_per_week || 20, file: null, preview: null, importing: false, progress: 0, importLog: '' }),
     created() { if (!D.contacts.length) this.tab = 'import'; },
     computed: {
@@ -2768,7 +2911,7 @@
 <div style="max-width:980px">
   <div class="page-head"><h1>Управление</h1></div>
   <div class="seg" style="margin-bottom:16px">
-    <button v-for="t in [['users','Пользователи'],['dicts','Справочники'],['dups','Дубли'],['trash','Корзина'],['import','Загрузка базы'],['export','Выгрузка']]" :key="t[0]" :class="{on: tab===t[0]}" @click="tab=t[0]">{{ t[1] }}</button>
+    <button v-for="t in [['users','Пользователи'],['dicts','Справочники'],['dups','Дубли'],['stats','Статистика'],['trash','Корзина'],['import','Загрузка базы'],['export','Выгрузка']]" :key="t[0]" :class="{on: tab===t[0]}" @click="tab=t[0]">{{ t[1] }}</button>
   </div>
 
   <div v-if="tab==='users'" class="stack" style="gap:16px">
@@ -2804,6 +2947,7 @@
 
   <DupsView v-if="tab==='dups'" />
   <TrashView v-if="tab==='trash'" />
+  <StatsAdmin v-if="tab==='stats'" />
   <div v-if="tab==='export'" class="card stack">
     <h2 class="h2">Полная выгрузка в Excel</h2>
     <div class="muted">Все издания, контакты и история питчей в одном файле. Это бэкап и способ передать карту дальше.</div>

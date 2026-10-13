@@ -1,0 +1,37 @@
+# Медиакарта: автообновление подписчиков (по понедельникам) и поиск свежих публикаций (по четвергам).
+# Заодно регулярные запросы не дают бесплатному проекту Supabase «уснуть».
+name: Медиакарта · статистика
+
+on:
+  schedule:
+    - cron: '0 4 * * 1'   # понедельник 07:00 по Москве — подписчики
+    - cron: '0 4 * * 4'   # четверг 07:00 по Москве — публикации
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Что запустить'
+        type: choice
+        options: [stats, pubs]
+        default: stats
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Запуск
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          VK_TOKEN: ${{ secrets.VK_TOKEN }}
+        run: |
+          MODE="${{ github.event.inputs.mode }}"
+          if [ -z "$MODE" ]; then
+            if [ "${{ github.event.schedule }}" = "0 4 * * 4" ]; then MODE=pubs; else MODE=stats; fi
+          fi
+          python scripts/update_stats.py "$MODE"

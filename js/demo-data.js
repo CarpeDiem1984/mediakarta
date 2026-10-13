@@ -160,11 +160,28 @@ window.MK_DEMO_DATA = function () {
   const event_guests = [];
   people.slice(0, 10).forEach((c, k) => event_guests.push({ id: event_guests.length + 1, event_id: 1, contact_id: c.id, owner: 'u-masha', status: gst[k % 4], note: null, updated_at: day(1) }));
   people.slice(3, 15).forEach((c, k) => event_guests.push({ id: event_guests.length + 1, event_id: 2, contact_id: c.id, owner: 'u-admin', status: gst2[k % 4], note: null, updated_at: day(50) }));
+  // статистика площадок (этап 4)
+  const plat = w => !w ? null : /t\.me|telegram/.test(w) ? 'telegram' : /youtube/.test(w) ? 'youtube' : /vk\.com/.test(w) ? 'vk' : /instagram/.test(w) ? 'instagram' : 'web';
+  const outlet_stats = [];
+  outlets.forEach(o => {
+    o.platform = plat(o.website); o.reach = null;
+    if (o.type !== 'СМИ') {
+      const v = Math.round(20000 + rnd() * 400000); o.subscribers = v; o.subscribers_at = day(2); o.stats_source = 'auto';
+      outlet_stats.push({ id: outlet_stats.length + 1, outlet_id: o.id, metric: 'subscribers', value: Math.round(v * (0.9 + rnd() * 0.08)), source: 'auto', at: day(33) });
+      outlet_stats.push({ id: outlet_stats.length + 1, outlet_id: o.id, metric: 'subscribers', value: v, source: 'auto', at: day(2) });
+    } else if (o.tier === 1 && rnd() > 0.3) { o.visits = Math.round(1e6 + rnd() * 9e7); o.visits_at = day(Math.floor(rnd() * 200)); o.stats_source = 'chrome'; }
+  });
+  outlets.find(o => o.name === 'Москвач').stats_error = 'закрытая ссылка-приглашение, нужна публичная ссылка';
+  const contact_pubs = [
+    { id: 1, contact_id: anna.id, url: 'https://www.vedomosti.ru/finance/articles/demo-bnpl', title: 'Рынок BNPL вырос в полтора раза — Ведомости', published_at: day(6), source: 'google_news', hidden: false },
+    { id: 2, contact_id: anna.id, url: 'https://www.vedomosti.ru/finance/articles/demo-cashback', title: 'Банки урезают кешбэк — Ведомости', published_at: day(21), source: 'google_news', hidden: false },
+  ];
   return {
+    outlet_stats, contact_pubs,
     events, event_guests,
     clients, mailing_lists, mailing_members, mailing_sends: [], notifications, verify_tasks: [],
     profiles, outlets, contacts, campaigns, campaign_items: items, notes,
     favorites: [anna.id].concat(people.filter((_, i) => i % 11 === 0).map(c => c.id)),
-    dictionaries, settings: { collision_days: 7 }, audit_log: []
+    dictionaries, settings: { collision_days: 7, schema_version: '2.0.4', stats_last_run: { at: day(1), ok: 6, failed: 1, skipped: 0, by: { telegram: 4, youtube: 2 } }, pubs_last_run: { at: day(4), checked: 120, found: 37 } }, audit_log: []
   };
 };

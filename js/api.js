@@ -170,6 +170,12 @@
       async assignVerify() { return must(await sb.rpc('assign_verify_tasks')); },
       async verifyTasks() { return must(await sb.from('verify_tasks').select('*').eq('week_start', weekStart())); },
       async itemsFresh() { return fetchAll('campaign_items', '*'); },
+      // --- 2.0 этап 4 ---
+      async setStat(outletId, metric, value, source) { must(await sb.rpc('set_outlet_stat', { p_outlet: outletId, p_metric: metric, p_value: value, p_source: source || 'manual' })); },
+      async outletStats(outletId) { return must(await sb.from('outlet_stats').select('*').eq('outlet_id', outletId).order('at', { ascending: false }).limit(30)); },
+      async contactPubs(cid) { return must(await sb.from('contact_pubs').select('*').eq('contact_id', cid).eq('hidden', false).order('published_at', { ascending: false }).limit(10)); },
+      async hidePub(id) { must(await sb.from('contact_pubs').update({ hidden: true }).eq('id', id)); },
+      async settings() { return Object.fromEntries(must(await sb.from('app_settings').select('*')).map(s => [s.key, s.value])); },
     };
   }
 
@@ -183,7 +189,7 @@
     const me = db.profiles[0];
     let logged = false;
     const tables = { outlets: 1, contacts: 1, campaigns: 1, campaign_items: 1, notes: 1, clients: 1, mailing_lists: 1, mailing_sends: 1, notifications: 1, verify_tasks: 1, events: 1, event_guests: 1 };
-    for (const k of ['clients', 'mailing_lists', 'mailing_members', 'mailing_sends', 'notifications', 'verify_tasks', 'events', 'event_guests']) db[k] = db[k] || [];
+    for (const k of ['clients', 'mailing_lists', 'mailing_members', 'mailing_sends', 'notifications', 'verify_tasks', 'events', 'event_guests', 'outlet_stats', 'contact_pubs']) db[k] = db[k] || [];
     for (const k of Object.keys(tables)) seq[k] = db[k].reduce((m, r) => Math.max(m, r.id || 0), 0);
     db.contact_moves = db.contact_moves || []; db.dup_ignores = db.dup_ignores || []; seq.contact_moves = 0;
     const auditLog = (table, id, action, diff) => db.audit_log.push({ id: ++seq.audit_log, table_name: table, row_id: id, action, changed_by: me.id, changed_at: now(), diff });
@@ -366,6 +372,17 @@
       },
       async verifyTasks() { return clone(db.verify_tasks.filter(x => x.week_start === weekStart())); },
       async itemsFresh() { return clone(db.campaign_items); },
+      // --- 2.0 этап 4 ---
+      async setStat(outletId, metric, value, source) {
+        const o = db.outlets.find(x => x.id === outletId); const at = now();
+        if (metric === 'subscribers') Object.assign(o, { subscribers: value, subscribers_at: at }); else Object.assign(o, { visits: value, visits_at: at });
+        Object.assign(o, { stats_source: source || 'manual', stats_error: null });
+        db.outlet_stats.push({ id: db.outlet_stats.length + 1, outlet_id: outletId, metric, value, source: source || 'manual', at });
+      },
+      async outletStats(outletId) { return clone(db.outlet_stats.filter(s => s.outlet_id === outletId).reverse()); },
+      async contactPubs(cid) { return clone(db.contact_pubs.filter(p => p.contact_id === cid && !p.hidden)); },
+      async hidePub(id) { const p = db.contact_pubs.find(x => x.id === id); if (p) p.hidden = true; },
+      async settings() { return clone(db.settings); },
     };
   }
 
