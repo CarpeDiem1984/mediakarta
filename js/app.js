@@ -672,6 +672,7 @@
     data: () => ({ notes: [], pubs: [], noteText: '', editComment: false, commentDraft: '', audit: null, showAudit: false, busy: false, mq: null }),
     computed: {
       c() { S.rev; return ix().contactById.get(this.id); },
+      s4: () => S.stage4,
       o() { return this.c && ix().outletById.get(this.c.outlet_id); },
       coll() { S.rev; return this.c ? collisions(this.c.id) : []; },
       pitches() {
@@ -806,7 +807,7 @@
     <template v-if="!c.is_desk"><span class="k">Отношение</span>
       <span class="v"><span class="seg"><button v-for="r in ['warm','neutral','cold']" :key="r" :class="{on: c.relation===r}" @click="setRel(r)"><span class="rel" :class="r">{{ relLabel(r) }}</span></button></span></span></template>
     <span class="k">Публикация</span>
-    <span class="v"><template v-if="c.last_pub_url"><a :href="safeUrl(c.last_pub_url)" target="_blank" rel="noopener">{{ c.last_pub_date ? fmtDate(c.last_pub_date) : 'ссылка' }} ↗</a></template><span v-else class="muted">не указана · <a href="#" @click.prevent="edit">добавить</a></span></span>
+    <span class="v"><template v-if="c.last_pub_url"><a :href="safeUrl(c.last_pub_url)" target="_blank" rel="noopener">{{ c.last_pub_date ? fmtDate(c.last_pub_date) : 'ссылка' }} ↗</a></template><template v-else-if="pubs.length"><a :href="safeUrl(pubs[0].url)" target="_blank" rel="noopener">{{ pubs[0].published_at ? fmtDate(pubs[0].published_at) : 'ссылка' }} ↗</a> <span class="muted small">· нашлась автоматически</span></template><span v-else class="muted">{{ s4 ? 'пока не нашли' : 'не указана' }} · <a href="#" @click.prevent="edit">добавить</a></span></span>
     <template v-if="resp && !c.is_desk"><span class="k">Отзывчивость</span>
       <span class="v">ответил(а) на {{ resp.replied }} из {{ resp.sent }} ({{ pct(resp.replied, resp.sent) }}%) · публикаций: {{ resp.published }}
         <span v-if="respB" class="status" :class="respB.cls" style="margin-left:4px">{{ respB.t }}</span></span></template>
@@ -1561,7 +1562,7 @@
         <a :href="x.p.url" target="_blank" rel="noopener" style="font-weight:500">{{ x.p.title || x.p.url }}</a>
         <div class="meta"><template v-for="(c, i) in x.people" :key="c.id">{{ i ? ', ' : '' }}<a href="#" @click.prevent="openContact(c.id)">{{ c.name }}</a></template>{{ x.o ? ' · ' + x.o.name : '' }} · {{ fmtShort(x.p.published_at) }}</div>
       </div>
-      <div v-if="!pubFeed.length" class="muted small">{{ pubsPool ? 'У журналистов из вашего пула свежих материалов не нашлось.' : 'Пока пусто: поиск идёт по четвергам.' }}</div>
+      <div v-if="!pubFeed.length" class="muted small">{{ pubsPool ? 'У журналистов из вашего пула свежих материалов не нашлось.' : 'Пока пусто: поиск идёт каждое утро.' }}</div>
     </div>
     <div class="card">
       <h2 class="h2">Свежие заметки коллег</h2>
@@ -3151,7 +3152,7 @@
       <a class="small" :href="repo + '/actions/workflows/mediakarta-stats.yml'" target="_blank" rel="noopener">Открыть запуски на GitHub ↗</a></div>
     <div class="card stack"><h2 class="h2" style="margin:0">Свежие публикации журналистов</h2>
       <div v-if="lastPubs && lastPubs.at">Последний запуск: <b>{{ fmtDate(lastPubs.at) }}</b> · проверено {{ lastPubs.checked }}, найдено {{ lastPubs.found }}</div>
-      <div v-else class="muted">Ещё не запускалось. Каждый четверг в 7:00: ваш пул и Tier 1, до 400 человек за раз.</div>
+      <div v-else class="muted">Ещё не запускалось. Каждое утро в 6:00: ваш пул и Tier 1, плюс следующие 800 журналистов базы по кругу.</div>
       <div class="small muted">Ищем материалы по имени журналиста на сайте его издания через Google News.</div></div>
   </div>
   <div class="card scroll-x" style="padding:0"><table class="tbl">

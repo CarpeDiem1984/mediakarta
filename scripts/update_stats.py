@@ -12,7 +12,8 @@
   SUPABASE_SERVICE_KEY   секретный ключ (sb_secret_… или service_role). Никогда не кладите его в код!
   YOUTUBE_API_KEY        ключ YouTube Data API v3 (необязательно)
   VK_TOKEN               сервисный ключ приложения VK (необязательно)
-  PUBS_LIMIT             сколько журналистов проверять за запуск (по умолчанию 400)
+  PUBS_LIMIT             сколько приоритетных (пул + Tier 1) проверять за запуск (по умолчанию 400)
+  PUBS_BATCH             сколько остальных журналистов проверять за запуск по кругу (по умолчанию 800)
 """
 import json, os, re, sys, time, html, urllib.request, urllib.parse, urllib.error
 from datetime import datetime, timezone, timedelta
@@ -187,10 +188,22 @@ def run_pubs():
     def key(c):
         o = outlets.get(c['outlet_id']) or {}
         return (0 if c['id'] in favs else 1, o.get('tier') or 9)
-    pick = [c for c in contacts if len(c['name'].split()) >= 2 and (c['id'] in favs or (outlets.get(c['outlet_id']) or {}).get('tier') == 1)
-            and domain_of((outlets.get(c['outlet_id']) or {}).get('website'))]
-    pick.sort(key=key)
-    pick = pick[:limit]
+    ok = [c for c in contacts if len(c['name'].split()) >= 2 and domain_of((outlets.get(c['outlet_id']) or {}).get('website'))]
+    prio = [c for c in ok if c['id'] in favs or (outlets.get(c['outlet_id']) or {}).get('tier') == 1]
+    prio.sort(key=key)
+    prio = prio[:limit]
+    # остальных проверяем по кругу порциями, чтобы за пару недель пройти всю базу
+    batch = int(os.environ.get('PUBS_BATCH', '800'))
+    pid = {c['id'] for c in prio}
+    rest = sorted((c for c in ok if c['id'] not in pid), key=lambda c: c['id'])
+    st = sb('GET', 'app_settings?key=eq.pubs_offset&select=value') or []
+    off = int((st[0]['value'] if st else 0) or 0)
+    if off >= len(rest):
+        off = 0
+    chunk = rest[off:off + batch]
+    sb('POST', 'app_settings?on_conflict=key', {'key': 'pubs_offset', 'value': off + len(chunk)}, prefer='resolution=merge-duplicates')
+    log(f'Приоритетных: {len(prio)}, остальные: {off}–{off + len(chunk)} из {len(rest)}')
+    pick = prio + chunk
     since = NOW - timedelta(days=120)
     found = 0
     for c in pick:
@@ -219,7 +232,7 @@ def run_pubs():
                 log(f"✓ {c['name'][:30]:30} {o['name'][:25]:25} {len(rows)}")
         except Exception as e:
             log(f"✗ {c['name'][:30]:30} {e}")
-        time.sleep(1.5)
+        time.sleep(1.2)
     sb('POST', 'app_settings?on_conflict=key', {'key': 'pubs_last_run', 'value': {'at': NOW.isoformat(), 'checked': len(pick), 'found': found}},
        prefer='resolution=merge-duplicates')
     log(f'Проверено журналистов: {len(pick)}, найдено материалов: {found}')
