@@ -170,7 +170,8 @@
       S.me = r.me; applyTheme(S.me.theme);
       rebuildIndex(); bump();
       if (S.view === 'map' && !D.contacts.length && isAdmin()) S.view = 'admin';
-      if (isAdmin()) api.purgeTrash().catch(() => {});
+      S.needsUpdate = !!r.needsUpdate;
+      if (isAdmin() && !r.needsUpdate) api.purgeTrash().catch(() => {});
     } catch (e) { console.error(e); S.loadError = e.message || String(e); }
   }
   // локальные мутации после ответа сервера
@@ -1803,6 +1804,7 @@
 <div v-else class="app" :class="{'with-drawer': !!s.drawer}">
   <Nav />
   <main class="main">
+    <div v-if="s.needsUpdate" class="banner" style="margin-bottom:16px">Вышло обновление Медиакарты 2.0, но база данных ещё не обновлена: новые функции (корзина, дубли, переходы, массовое редактирование) пока не работают. Администратору нужно выполнить файл <b>supabase/update-2.0-stage1.sql</b> в Supabase → SQL Editor и обновить страницу.</div>
     <DashView v-if="s.view==='dash'" />
     <MapView v-else-if="s.view==='map'" />
     <CampaignsView v-else-if="s.view==='campaigns'" />

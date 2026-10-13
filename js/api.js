@@ -46,10 +46,18 @@
       onAuth(cb) { sb.auth.onAuthStateChange((ev, s) => cb(ev, s ? s.user : null)); },
 
       async loadAll(progress) {
+        try { return await this.loadAllV2(progress, true); }
+        catch (e) {
+          // база ещё не обновлена до 2.0 — работаем в прежнем режиме и просим админа применить обновление
+          if (!/deleted_at|contact_moves|dup_ignores|does not exist|schema cache/i.test(e.message)) throw e;
+          const r = await this.loadAllV2(progress, false); r.needsUpdate = true; return r;
+        }
+      },
+      async loadAllV2(progress, v2) {
         const user = await this.session();
         let pc = 0, po = 0;
         const report = () => progress && progress(Math.round((po * 0.25 + pc * 0.75) * 100));
-        const alive = q => q.is('deleted_at', null);
+        const alive = v2 ? (q => q.is('deleted_at', null)) : null;
         const [outlets, contacts, campaigns, items, profiles, favs, dicts, settings, moves, ignores] = await Promise.all([
           fetchAll('outlets', '*', 'id', (d, t) => { po = d / t; report(); }, alive),
           fetchAll('contacts', '*', 'id', (d, t) => { pc = d / t; report(); }, alive),
@@ -59,8 +67,8 @@
           sb.from('favorites').select('contact_id').eq('user_id', user.id).then(must),
           sb.from('dictionaries').select('*').order('sort').then(must),
           sb.from('app_settings').select('*').then(must),
-          fetchAll('contact_moves', '*'),
-          sb.from('dup_ignores').select('kind,a,b').then(must),
+          v2 ? fetchAll('contact_moves', '*') : Promise.resolve([]),
+          v2 ? sb.from('dup_ignores').select('kind,a,b').then(must) : Promise.resolve([]),
         ]);
         return {
           outlets, contacts, campaigns, items, profiles,
