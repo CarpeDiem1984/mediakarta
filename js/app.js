@@ -2828,19 +2828,19 @@
   </div>
   <div class="card scroll-x" style="padding:0"><table class="tbl">
     <thead><tr><th>Площадка</th><th>Всего</th><th>С цифрами</th><th>Обновлено за 2 недели</th><th>Ошибки</th></tr></thead>
-    <tbody><tr v-for="p in plats" :key="p.k"><td><b>{{ plabel(p.k) }}</b><div v-if="p.k==='web'" class="small muted">визиты/мес (SimilarWeb)</div><div v-else-if="p.k==='instagram'" class="small muted">через Chrome</div></td>
+    <tbody><tr v-for="p in plats" :key="p.k"><td><b>{{ plabel(p.k) }}</b><div v-if="p.k==='web'" class="small muted">визиты/мес (SimilarWeb)</div><div v-else-if="p.k==='instagram'" class="small muted">вручную в карточке</div></td>
       <td class="mono">{{ p.total }}</td><td class="mono">{{ p.data }}</td><td class="mono">{{ p.fresh }}</td><td class="mono">{{ p.err }}</td></tr></tbody></table></div>
-  <div class="card stack"><h2 class="h2" style="margin:0">Instagram и SimilarWeb (через ваш Chrome)</h2>
-    <div class="small">Сейчас ждут обновления: Instagram — <b>{{ igCount() }}</b>, сайты СМИ для SimilarWeb — <b>{{ swCount() }}</b>.</div>
+  <div class="card stack"><h2 class="h2" style="margin:0">Визиты сайтов СМИ (SimilarWeb)</h2>
+    <div class="small">Без свежих цифр сейчас: <b>{{ swCount() }}</b> сайтов СМИ.</div>
     <div class="row"><span class="small">SimilarWeb проверяем для СМИ</span><select class="select" style="width:160px; height:32px" v-model="swTier" aria-label="Tier для SimilarWeb"><option value="1">только Tier 1</option><option value="2">Tier 1 и 2</option><option value="3">Tier 1–3</option></select><button class="btn sm" @click="saveSw">Сохранить</button></div>
-    <div class="small muted">Обновление идёт задачей по расписанию через Claude в вашем Chrome, когда компьютер включён. Попросить вручную можно в чате: «обнови Instagram и SimilarWeb в Медиакарте».</div></div>
+    <div class="small muted">Автоматически не обновляется. Когда понадобится, попросите в чате: «обнови SimilarWeb в Медиакарте» — Claude пройдётся по сайтам через ваш Chrome. Instagram заполняется вручную в карточке издания.</div></div>
   <div v-if="errors.length" class="card"><h2 class="h2">Не удалось обновить · {{ errors.length }}</h2>
     <div v-for="o in errors" :key="o.id" class="note row" style="cursor:pointer" @click="openOutlet(o.id)"><span class="grow"><b>{{ o.name }}</b> <span class="small muted">{{ o.website }}</span></span><span class="small" style="color:var(--danger)">{{ o.stats_error }}</span></div></div>
   <div v-if="noLink.length" class="card"><h2 class="h2">Новые медиа и блогеры без ссылки · {{ noLink.length }}</h2>
     <div class="small muted" style="margin-bottom:6px">Без ссылки на канал подписчиков не посчитать. Откройте издание → «Изменить» → поле «Сайт / ссылка на канал».</div>
     <div v-for="o in noLink.slice(0, 40)" :key="o.id" class="note" style="cursor:pointer" @click="openOutlet(o.id)">{{ o.name }} <span class="small muted">· {{ o.type }}</span></div>
     <div v-if="noLink.length > 40" class="small muted">…и ещё {{ noLink.length - 40 }}</div></div>
-  <div class="card stack"><h2 class="h2" style="margin:0">Как включить автообновление (один раз)</h2>
+  <div v-if="!(last && last.at)" class="card stack"><h2 class="h2" style="margin:0">Как включить автообновление (один раз)</h2>
     <ol class="small" style="margin:0; padding-left:18px; line-height:1.7">
       <li>Supabase → Project Settings → API Keys → создайте или скопируйте <b>Secret key</b> (sb_secret_…). Он даёт полный доступ к базе: никому не пересылайте и не вставляйте в код.</li>
       <li>GitHub → <a :href="repo + '/settings/secrets/actions'" target="_blank" rel="noopener">Settings → Secrets and variables → Actions</a> → New repository secret. Добавьте: <code>SUPABASE_URL</code>, <code>SUPABASE_SERVICE_KEY</code>, по желанию <code>YOUTUBE_API_KEY</code> и <code>VK_TOKEN</code>.</li>
