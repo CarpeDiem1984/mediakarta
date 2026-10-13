@@ -139,6 +139,11 @@ window.MK_DEMO_DATA = function () {
   ].map((v, i) => ({ kind: 'topic', value: v, sort: i }))
     .concat(['берёт эксклюзивы', 'берёт комментарии', 'пишет колонки', 'только TG', 'не любит звонки', 'не любит рассылки', 'отвечает быстро', 'игнорирует', 'коммерция / платно', 'любит цифры и данные'].map((v, i) => ({ kind: 'tag', value: v, sort: i })));
 
+  // пара дублей и дубль издания, чтобы было что склеивать в демо
+  const dupSrc = contacts.find(c => !c.is_desk && c.outlet_id === 2 && c.emails.length);
+  if (dupSrc) contacts.push(Object.assign({}, dupSrc, { id: ++cid, name: dupSrc.name.split(' ').reverse().join(' '), emails: [dupSrc.emails[0].toUpperCase()], phones: [], comment: 'Из второй базы: просит писать в TG', tags: [], sources: ['Демо-2'] }));
+  outlets.push(Object.assign({}, outlets[2], { id: outlets.length + 1, name: 'Коммерсантъ', topics: ['Общество и новости'], sources: ['Демо-2'] }));
+  contacts.push({ id: ++cid, outlet_id: outlets.length, is_desk: false, name: 'Глеб Громов', role: 'Обозреватель', topics: [], emails: ['g.gromov@kommersant.ru'], phones: [], telegram: [], socials: [], relation: 'neutral', tags: [], sources: ['Демо-2'], created_at: day(10), updated_at: day(10) });
   return {
     profiles, outlets, contacts, campaigns, campaign_items: items, notes,
     favorites: [anna.id].concat(people.filter((_, i) => i % 11 === 0).map(c => c.id)),

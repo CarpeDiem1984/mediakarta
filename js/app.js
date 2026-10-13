@@ -25,7 +25,7 @@
     mode: api.mode, booting: true, user: null, me: null, loadingPct: 0, loadError: '',
     view: 'map', campaignId: null, drawer: null, modal: null, toast: '', rev: 0,
   });
-  const D = { outlets: [], contacts: [], campaigns: [], items: [], profiles: [], favorites: new Set(), dict: { topic: [], tag: [] }, settings: { collision_days: 7 } };
+  const D = { outlets: [], contacts: [], campaigns: [], items: [], profiles: [], favorites: new Set(), dict: { topic: [], tag: [] }, settings: { collision_days: 7 }, moves: [], ignores: [] };
   let IX = {};
   const bump = () => { S.rev++; };
 
@@ -62,7 +62,14 @@
       if (!prev || prev.sent_at < it.sent_at) lastPitchOutlet.set(c.outlet_id, it);
     }
     for (const [, arr] of byOutlet) arr.sort((a, b) => (b.is_desk - a.is_desk) || a.name.localeCompare(b.name, 'ru'));
-    IX = { outletById, contactById, byOutlet, orphan, itemsByContact, itemsByCampaign, lastPitch, lastPitchOutlet, profileById };
+    const movesByContact = new Map(), movedFromOutlet = new Map();
+    for (const m of D.moves) {
+      if (!movesByContact.has(m.contact_id)) movesByContact.set(m.contact_id, []);
+      movesByContact.get(m.contact_id).push(m);
+      if (m.from_outlet_id) { if (!movedFromOutlet.has(m.from_outlet_id)) movedFromOutlet.set(m.from_outlet_id, []); movedFromOutlet.get(m.from_outlet_id).push(m); }
+    }
+    for (const [, arr] of movesByContact) arr.sort((a, b) => a.moved_at.localeCompare(b.moved_at));
+    IX = { outletById, contactById, byOutlet, orphan, itemsByContact, itemsByCampaign, lastPitch, lastPitchOutlet, profileById, movesByContact, movedFromOutlet };
   }
   const ix = () => (S.rev, IX);
 
@@ -158,9 +165,12 @@
       D.profiles = markRaw(r.profiles); D.favorites = new Set(r.favorites);
       D.dict = { topic: r.dictionaries.filter(d => d.kind === 'topic').map(d => d.value), tag: r.dictionaries.filter(d => d.kind === 'tag').map(d => d.value) };
       D.settings = Object.assign({ collision_days: 7 }, r.settings);
+      D.moves = markRaw(r.moves || []); D.ignores = markRaw(r.ignores || []);
+      { const cids = new Set(D.contacts.map(c => c.id)), kids = new Set(D.campaigns.map(c => c.id)); D.items = markRaw(D.items.filter(i => cids.has(i.contact_id) && kids.has(i.campaign_id))); }
       S.me = r.me; applyTheme(S.me.theme);
       rebuildIndex(); bump();
       if (S.view === 'map' && !D.contacts.length && isAdmin()) S.view = 'admin';
+      if (isAdmin()) api.purgeTrash().catch(() => {});
     } catch (e) { console.error(e); S.loadError = e.message || String(e); }
   }
   // локальные мутации после ответа сервера
@@ -197,6 +207,16 @@
       for (const r of res) D.items.push(r);
       rebuildIndex(); bump();
       return { added: res.length, skipped: contactIds.length - res.length };
+    },
+    async refreshRows(list, table, ids) {
+      const rows = await api.rowsByIds(table, ids);
+      const map = new Map(rows.map(r => [r.id, r]));
+      D[list] = markRaw(D[list].map(r => map.get(r.id) || r));
+      rebuildIndex(); bump();
+    },
+    async trashRow(list, table, id, label) {
+      await api.softDelete(table, id); removeLocal(list, id);
+      toast(label + ' в корзине. Восстановить можно 30 дней: Управление → Корзина');
     },
     async toggleFav(cid) {
       if (D.favorites.has(cid)) { await api.removeFavorite(cid, S.me.id); D.favorites.delete(cid); toast('Убрано из пула'); }
@@ -374,6 +394,19 @@
       visible() { return this.result.rows.slice(0, this.limit); },
       selCount() { this.selRev; return this.selected.size; },
       activeFilters() { return [this.type, this.topic, this.geo, this.tier, this.relation, this.pool, this.stale, this.verified].filter(Boolean).length; },
+      chips() {
+        const c = [], L = { warm: 'Тёплые', neutral: 'Нейтральные', cold: 'Негатив' }, St = { 30: 'Не трогали 30+ дней', 60: 'Не трогали 60+ дней', 90: 'Не трогали 90+ дней', never: 'Ещё не питчили' };
+        if (this.q) c.push({ k: 'q', l: 'Поиск: «' + this.q + '»' });
+        if (this.type) c.push({ k: 'type', l: this.type });
+        if (this.topic) c.push({ k: 'topic', l: 'Тематика: ' + this.topic });
+        if (this.geo) c.push({ k: 'geo', l: 'География: ' + this.geo });
+        if (this.tier) c.push({ k: 'tier', l: 'Tier ' + this.tier });
+        if (this.relation) c.push({ k: 'relation', l: L[this.relation] });
+        if (this.stale) c.push({ k: 'stale', l: St[this.stale] });
+        if (this.verified) c.push({ k: 'verified', l: this.verified === 'fresh' ? 'Проверены за год' : 'Не проверены' });
+        if (this.pool) c.push({ k: 'pool', l: 'Мой пул' });
+        return c;
+      },
     },
     methods: {
       isOpen(r) { const k = r.o.id ?? 'none'; return this.open[k] !== undefined ? this.open[k] : r.expand; },
@@ -391,6 +424,8 @@
       selOutlet(r, on) { for (const c of r.people) this.sel(c.id, on); },
       outletSel(r) { this.selRev; return r.people.length > 0 && r.people.every(c => this.selected.has(c.id)); },
       clearSel() { this.selected = new Set(); this.selRev++; },
+      clearChip(k) { if (k === 'q') { this.q = ''; this.qd = ''; } else this[k] = k === 'pool' ? false : ''; },
+      bulk() { S.modal = { kind: 'bulk', ids: [...this.selected], done: () => this.clearSel() }; },
       reset() { Object.assign(this, { q: '', qd: '', type: '', topic: '', geo: '', tier: '', relation: '', pool: false, stale: '', verified: '' }); },
       toCampaign() { S.modal = { kind: 'addToCampaign', ids: [...this.selected], done: () => this.clearSel() }; },
       copyEmails() {
@@ -431,7 +466,10 @@
     <select class="fselect" :class="{set: verified}" v-model="verified" aria-label="Актуальность"><option value="">Актуальность</option><option value="fresh">Проверены за год</option><option value="old">Не проверены</option></select>
     <label class="toggle"><input type="checkbox" v-model="pool"> Мой пул</label>
     <select class="fselect" v-model="sort" aria-label="Сортировка"><option value="tier">Сначала Tier 1</option><option value="people">Больше контактов</option><option value="recent">Недавно питчили</option><option value="name">По алфавиту</option></select>
-    <button v-if="activeFilters || q" class="btn ghost sm" @click="reset">Сбросить</button>
+  </div>
+  <div v-if="chips.length" class="row wrap" style="margin:-4px 0 14px">
+    <span v-for="ch in chips" :key="ch.k" class="chip x on" role="button" tabindex="0" @click="clearChip(ch.k)" @keydown.enter="clearChip(ch.k)" :title="'Убрать фильтр'">{{ ch.l }} ✕</span>
+    <button class="btn ghost sm" @click="reset">Сбросить всё</button>
   </div>
 
   <div class="table">
@@ -484,6 +522,7 @@
     <b>Выбрано: {{ selCount }}</b>
     <span class="grow"></span>
     <button class="btn primary" @click="toCampaign"><Ic n="send"/> В инфоповод</button>
+    <button class="btn" @click="bulk"><Ic n="edit"/> Изменить разом</button>
     <button class="btn" @click="copyEmails"><Ic n="copy"/> Скопировать почты</button>
     <button class="btn" @click="exportSel"><Ic n="down"/> Excel</button>
     <button class="btn ghost" @click="clearSel">Снять выделение</button>
@@ -507,6 +546,7 @@
           .map(it => ({ it, camp: D.campaigns.find(x => x.id === it.campaign_id) || {} }));
       },
       tagOptions() { S.rev; return D.dict.tag; },
+      career() { S.rev; return ix().movesByContact.get(this.id) || []; },
     },
     watch: { id: { immediate: true, handler() { this.load(); } } },
     methods: {
@@ -548,9 +588,10 @@
       edit() { S.modal = { kind: 'contactForm', id: this.c.id }; },
       toCampaign() { S.modal = { kind: 'addToCampaign', ids: [this.c.id] }; },
       fav() { safe(() => actions.toggleFav(this.c.id)); },
+      move() { S.modal = { kind: 'move', id: this.c.id }; },
       async del() {
-        if (!confirm('Удалить контакт «' + this.c.name + '» безвозвратно? Заметки и история питчей тоже удалятся.')) return;
-        await safe(() => api.remove('contacts', this.c.id), 'Контакт удалён'); removeLocal('contacts', this.c.id); S.drawer = null;
+        if (!confirm('Убрать контакт «' + this.c.name + '» в корзину?')) return;
+        await safe(() => actions.trashRow('contacts', 'contacts', this.c.id, 'Контакт')); S.drawer = null;
       },
       openCampaign(id) { go('campaign', { campaignId: id }); },
     },
@@ -568,8 +609,12 @@
     <button class="btn primary sm" @click="toCampaign"><Ic n="send"/> В инфоповод</button>
     <button class="btn sm" @click="fav"><Ic n="star" :fill="isFav(c.id) ? 'var(--star)' : 'none'" :style="{color: isFav(c.id) ? 'var(--star)' : ''}"/> {{ isFav(c.id) ? 'В моём пуле' : 'В мой пул' }}</button>
     <button class="btn sm" @click="edit"><Ic n="edit"/> Изменить</button>
-    <button v-if="isAdmin()" class="btn ghost sm" style="color:var(--danger)" @click="del" aria-label="Удалить контакт"><Ic n="trash"/></button>
+    <button v-if="!c.is_desk" class="btn sm" @click="move">Перешёл в другое издание</button>
+    <button v-if="isAdmin()" class="btn ghost sm" style="color:var(--danger)" @click="del" aria-label="В корзину"><Ic n="trash"/></button>
   </div>
+  <div v-if="career.length" class="small"><span class="label">Карьера:&nbsp;</span>
+    <template v-for="m in career" :key="m.id"> {{ m.from_name || 'без издания' }}<template v-if="m.from_role"> ({{ m.from_role }})</template> → </template>
+    <b>{{ o ? o.name : 'без издания' }}</b> <span class="muted">· с {{ fmtDate(career[career.length-1].moved_at) }}</span></div>
   <div v-for="x in coll" :key="x.it.id" class="banner"><Ic n="alert" :s="14"/> {{ x.who }} {{ x.it.owner===s.me.id ? '(вы)' : '' }} писал(а) {{ x.ago }} по инфоповоду «{{ x.camp ? x.camp.title : '—' }}». Статус: {{ statusLabel(x.it.status).toLowerCase() }}.</div>
 
   <div class="kv">
@@ -646,9 +691,12 @@
     computed: {
       o() { S.rev; return ix().outletById.get(this.id); },
       people() { S.rev; return ix().byOutlet.get(this.id) || []; },
+      former() {
+        S.rev; return (ix().movedFromOutlet.get(this.id) || []).map(m => ({ m, c: ix().contactById.get(m.contact_id) })).filter(x => x.c && x.c.outlet_id !== this.id);
+      },
       pitches() {
         S.rev; const ids = new Set(this.people.map(c => c.id));
-        return D.items.filter(i => ids.has(i.contact_id) && i.status !== 'not_sent').sort((a, b) => (b.sent_at || '').localeCompare(a.sent_at || '')).slice(0, 15)
+        return D.items.filter(i => (i.outlet_id ? i.outlet_id === this.id : ids.has(i.contact_id)) && i.status !== 'not_sent').sort((a, b) => (b.sent_at || '').localeCompare(a.sent_at || '')).slice(0, 15)
           .map(it => ({ it, c: ix().contactById.get(it.contact_id), camp: D.campaigns.find(x => x.id === it.campaign_id) || {} }));
       },
     },
@@ -657,11 +705,12 @@
       edit() { S.modal = { kind: 'outletForm', id: this.o.id }; },
       add() { S.modal = { kind: 'contactForm', id: null, outletId: this.o.id }; },
       async del() {
-        if (!confirm('Удалить издание «' + this.o.name + '»? Контакты останутся, но будут «без издания».')) return;
-        await safe(() => api.remove('outlets', this.o.id), 'Издание удалено'); removeLocal('outlets', this.o.id); S.drawer = null;
+        if (!confirm('Убрать издание «' + this.o.name + '» в корзину? Его контакты останутся в разделе «Без издания».')) return;
+        await safe(() => actions.trashRow('outlets', 'outlets', this.o.id, 'Издание')); S.drawer = null;
       },
       toCampaign() { S.modal = { kind: 'addToCampaign', ids: this.people.map(c => c.id) }; },
     },
+
     template: `
 <aside class="drawer" aria-label="Карточка издания" v-if="o">
   <div class="row" style="align-items:flex-start">
@@ -690,6 +739,12 @@
     <div v-for="c in people" :key="c.id" class="note row" style="cursor:pointer" @click="openContact(c.id)">
       <div class="grow"><div><b>{{ c.name }}</b></div><div class="meta">{{ c.role || '' }}</div></div>
       <span v-if="!c.is_desk" class="rel" :class="c.relation">{{ relLabel(c.relation) }}</span>
+    </div>
+  </section>
+  <section v-if="former.length">
+    <h3 class="section-title">Ушли из издания · {{ former.length }}</h3>
+    <div v-for="x in former" :key="x.m.id" class="note row" style="cursor:pointer" @click="openContact(x.c.id)">
+      <div class="grow"><b>{{ x.c.name }}</b><div class="meta">теперь {{ outletName(x.c.outlet_id) }} · с {{ fmtDate(x.m.moved_at) }}</div></div>
     </div>
   </section>
   <section>
@@ -1065,8 +1120,8 @@
       edit() { S.modal = { kind: 'campaignForm', id: this.camp.id }; },
       async archive() { await safe(() => actions.saveCampaign(this.camp.id, { archived: !this.camp.archived }), this.camp.archived ? 'Вернули из архива' : 'Перенесено в архив'); },
       async del() {
-        if (!confirm('Удалить инфоповод «' + this.camp.title + '» вместе с медиалистом?')) return;
-        await safe(() => api.remove('campaigns', this.camp.id), 'Удалено'); removeLocal('campaigns', this.camp.id); go('campaigns');
+        if (!confirm('Убрать инфоповод «' + this.camp.title + '» в корзину?')) return;
+        await safe(() => actions.trashRow('campaigns', 'campaigns', this.camp.id, 'Инфоповод')); go('campaigns');
       },
       canDel() { return isAdmin() || (this.camp && this.camp.created_by === S.me.id); },
       copyEmails(onlyNotSent) {
@@ -1295,9 +1350,333 @@
 </div>`,
   };
 
+  // ====================== 2.0 · ПЕРЕХОД В ДРУГОЕ ИЗДАНИЕ ======================
+  const MoveModal = {
+    mixins: [helpers], props: { m: Object },
+    data() { return { outlet: '', role: '', busy: false, err: '' }; },
+    computed: {
+      c() { S.rev; return ix().contactById.get(this.m.id); },
+      outletNames() { S.rev; return D.outlets.map(o => o.name); },
+    },
+    methods: {
+      close() { S.modal = null; },
+      async save() {
+        const name = this.outlet.trim(); if (!name) { this.err = 'Укажите новое издание'; return; }
+        this.busy = true; this.err = '';
+        try {
+          let o = D.outlets.find(x => norm(x.name) === norm(name));
+          if (!o) { if (!confirm('Издания «' + name + '» нет в базе. Создать?')) { this.busy = false; return; } o = await actions.saveOutlet(null, { name, type: 'СМИ', topics: [], geo: ['Федеральные'] }); }
+          if (o.id === this.c.outlet_id) { this.err = 'Журналист уже в этом издании'; this.busy = false; return; }
+          await api.moveContact(this.c.id, o.id, this.role.trim());
+          const moves = await api.movesFor(this.c.id);
+          D.moves = markRaw(D.moves.filter(x => x.contact_id !== this.c.id).concat(moves));
+          await actions.refreshRows('contacts', 'contacts', [this.c.id]);
+          toast(this.c.name + ' теперь в «' + o.name + '». История сохранена');
+          S.modal = null;
+        } catch (e) { this.err = e.message; } finally { this.busy = false; }
+      },
+    },
+    template: `
+<div class="modal-back" @click.self="close"><form class="modal" @submit.prevent="save">
+  <h3>{{ c.name }} перешёл(а) в другое издание</h3>
+  <div class="muted">Сейчас: {{ outletName(c.outlet_id) }}{{ c.role ? ' · ' + c.role : '' }}. Заметки, питчи, отношение и теги переедут вместе с человеком, а в карточке появится строка «Карьера».</div>
+  <label class="field"><span>Новое издание</span><input class="input" v-model="outlet" list="mk-move-outlets" placeholder="Начните вводить название" required></label>
+  <datalist id="mk-move-outlets"><option v-for="n in outletNames" :key="n" :value="n"></option></datalist>
+  <label class="field"><span>Новая должность (если знаете)</span><input class="input" v-model="role"></label>
+  <div v-if="err" class="banner">{{ err }}</div>
+  <div class="foot"><button type="button" class="btn ghost" @click="close">Отмена</button><button class="btn primary" :disabled="busy">Перенести</button></div>
+</form></div>`,
+  };
+
+  // ====================== 2.0 · МАССОВОЕ РЕДАКТИРОВАНИЕ ======================
+  const BulkEdit = {
+    mixins: [helpers], props: { m: Object },
+    data: () => ({ ct: {}, tg: {}, ot: {}, newTag: '', relation: '', outlet: '', oType: '', oTier: '', oGeo: '', busy: false, err: '' }),
+    computed: {
+      topics() { S.rev; return D.dict.topic; },
+      tags() { S.rev; return D.dict.tag.concat(Object.keys(this.tg).filter(t => !D.dict.tag.includes(t))); },
+      outletIds() { S.rev; return [...new Set(this.m.ids.map(id => (ix().contactById.get(id) || {}).outlet_id).filter(Boolean))]; },
+      outletNames() { S.rev; return D.outlets.map(o => o.name); },
+    },
+    methods: {
+      cyc(map, k) { const v = map[k]; const n = v === 'add' ? 'remove' : v === 'remove' ? undefined : 'add'; const c = Object.assign({}, map); if (n) c[k] = n; else delete c[k]; return c; },
+      chipCls(v) { return v === 'add' ? 'chip x on' : v === 'remove' ? 'chip x' : 'chip x'; },
+      chipStyle(v) { return v === 'remove' ? 'text-decoration: line-through; color: var(--danger); border-color: var(--danger)' : (v ? '' : 'opacity:.65'); },
+      pre(v) { return v === 'add' ? '+ ' : v === 'remove' ? '− ' : ''; },
+      addTag() { const t = this.newTag.trim(); if (t) this.tg = Object.assign({}, this.tg, { [t]: 'add' }); this.newTag = ''; },
+      pick(map, v) { return Object.keys(map).filter(k => map[k] === v); },
+      close() { S.modal = null; },
+      async apply() {
+        this.err = ''; this.busy = true;
+        try {
+          const cops = {}, oops = {};
+          if (this.pick(this.ct, 'add').length) cops.topics_add = this.pick(this.ct, 'add');
+          if (this.pick(this.ct, 'remove').length) cops.topics_remove = this.pick(this.ct, 'remove');
+          if (this.pick(this.tg, 'add').length) cops.tags_add = this.pick(this.tg, 'add');
+          if (this.pick(this.tg, 'remove').length) cops.tags_remove = this.pick(this.tg, 'remove');
+          if (this.relation) cops.relation = this.relation;
+          if (this.outlet.trim()) {
+            const o = D.outlets.find(x => norm(x.name) === norm(this.outlet.trim()));
+            if (!o) { this.err = 'Издание «' + this.outlet + '» не найдено. Создайте его сначала.'; this.busy = false; return; }
+            cops.outlet_id = o.id;
+          }
+          if (this.pick(this.ot, 'add').length) oops.topics_add = this.pick(this.ot, 'add');
+          if (this.pick(this.ot, 'remove').length) oops.topics_remove = this.pick(this.ot, 'remove');
+          if (this.oType) oops.type = this.oType;
+          if (this.oTier) oops.tier = this.oTier === 'none' ? '' : this.oTier;
+          if (this.oGeo.trim()) oops.geo_set = splitList(this.oGeo);
+          if (!Object.keys(cops).length && !Object.keys(oops).length) { this.err = 'Ничего не выбрано'; this.busy = false; return; }
+          if (Object.keys(cops).length) { await api.bulkEditContacts(this.m.ids, cops); await actions.refreshRows('contacts', 'contacts', this.m.ids); }
+          if (Object.keys(oops).length && this.outletIds.length) { await api.bulkEditOutlets(this.outletIds, oops); await actions.refreshRows('outlets', 'outlets', this.outletIds); }
+          toast('Готово: изменено ' + this.m.ids.length + ' ' + plural(this.m.ids.length, 'контакт', 'контакта', 'контактов'));
+          this.m.done && this.m.done(); S.modal = null;
+        } catch (e) { this.err = e.message; } finally { this.busy = false; }
+      },
+    },
+    template: `
+<div class="modal-back" @click.self="close"><div class="modal wide">
+  <h3>Изменить разом</h3>
+  <div class="muted">Выбрано контактов: {{ m.ids.length }} (из {{ outletIds.length }} {{ outletIds.length === 1 ? 'издания' : 'изданий' }}). Клик по метке: <b>+ добавить</b> → <b style="color:var(--danger)">− убрать</b> → не трогать.</div>
+  <div class="card stack">
+    <h2 class="h2" style="margin:0">Контакты</h2>
+    <div class="field"><span>Тематики</span><div><span v-for="t in topics" :key="t" :class="chipCls(ct[t])" :style="chipStyle(ct[t])" @click="ct = cyc(ct, t)">{{ pre(ct[t]) }}{{ t }}</span></div></div>
+    <div class="field"><span>Теги</span><div><span v-for="t in tags" :key="t" :class="chipCls(tg[t])" :style="chipStyle(tg[t])" @click="tg = cyc(tg, t)">{{ pre(tg[t]) }}{{ t }}</span>
+      <input class="input" style="width:180px; height:28px; display:inline-block" v-model="newTag" placeholder="свой тег + Enter" @keydown.enter.prevent="addTag" aria-label="Новый тег"></div></div>
+    <div class="grid2">
+      <label class="field"><span>Отношение</span><select class="select" v-model="relation"><option value="">не менять</option><option value="warm">Тёплый</option><option value="neutral">Нейтральный</option><option value="cold">Негатив</option></select></label>
+      <label class="field"><span>Перенести в издание</span><input class="input" v-model="outlet" list="mk-bulk-outlets" placeholder="не менять"></label>
+      <datalist id="mk-bulk-outlets"><option v-for="n in outletNames" :key="n" :value="n"></option></datalist>
+    </div>
+  </div>
+  <div class="card stack">
+    <h2 class="h2" style="margin:0">Их издания ({{ outletIds.length }})</h2>
+    <div class="grid3">
+      <label class="field"><span>Тип</span><select class="select" v-model="oType"><option value="">не менять</option><option>СМИ</option><option>Новые медиа</option><option>Блогеры</option></select></label>
+      <label class="field"><span>Tier</span><select class="select" v-model="oTier"><option value="">не менять</option><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="none">убрать</option></select></label>
+      <label class="field"><span>География (заменит текущую)</span><input class="input" v-model="oGeo" placeholder="не менять"></label>
+    </div>
+    <div class="field"><span>Тематики изданий</span><div><span v-for="t in topics" :key="t" :class="chipCls(ot[t])" :style="chipStyle(ot[t])" @click="ot = cyc(ot, t)">{{ pre(ot[t]) }}{{ t }}</span></div></div>
+  </div>
+  <div v-if="err" class="banner">{{ err }}</div>
+  <div class="foot"><button class="btn ghost" @click="close">Отмена</button><button class="btn primary" :disabled="busy" @click="apply">{{ busy ? 'Применяем…' : 'Применить' }}</button></div>
+</div></div>`,
+  };
+
+  // ====================== 2.0 · ДУБЛИ ======================
+  const TR = { а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'e', ж: 'zh', з: 'z', и: 'i', й: 'i', к: 'k', л: 'l', м: 'm', н: 'n', о: 'o', п: 'p', р: 'r', с: 's', т: 't', у: 'u', ф: 'f', х: 'h', ц: 'c', ч: 'ch', ш: 'sh', щ: 'sh', ъ: '', ы: 'y', ь: '', э: 'e', ю: 'yu', я: 'ya' };
+  const latKey = s => norm(s).replace(/[а-яё]/g, ch => TR[ch] ?? ch).replace(/^(https?:\/\/)?(www\.)?/, '').replace(/[^a-z0-9]/g, '').replace(/(ru|com|rf)$/, '');
+  const personKey = s => norm(s).replace(/[^а-яa-z\s-]/g, ' ').split(/\s+/).filter(w => w.length > 1 && !/(вич|вна|ична|инична)$/.test(w)).sort().join(' ');
+  const GENERIC_MAIL = /^(info|main|news|editor|editors|redaktor|redakciya|redaction|press|pr|office|mail|red|hello|reklama|adv|ads|support|post|letter|letters|newsroom|glav|glavred|smi)[\d._-]*@/i;
+  function namesCompatible(a, b) {
+    const ta = personKey(a).split(' ').filter(w => w.length > 2), tb = personKey(b).split(' ').filter(w => w.length > 2);
+    if (ta.length < 2 || tb.length < 2) return true;          // у одного только имя — проверить глазами
+    return ta.some(w => tb.includes(w)) && ta.filter(w => tb.includes(w)).length >= Math.min(ta.length, tb.length) - 0;
+  }
+  function findDupGroups(kind) {
+    const ign = new Set(D.ignores.filter(x => x.kind === kind).map(x => x.a + ':' + x.b));
+    const ignored = (a, b) => ign.has(Math.min(a, b) + ':' + Math.max(a, b));
+    const strongB = new Map(), weakB = new Map();
+    const add = (m, k, id, why) => { if (!m.has(k)) m.set(k, { ids: [], why }); m.get(k).ids.push(id); };
+    const ids = [];
+    if (kind === 'contact') {
+      for (const c of D.contacts) {
+        if (c.is_desk) continue; ids.push(c.id);
+        for (const e of c.emails || []) if (!GENERIC_MAIL.test(e)) add(strongB, 'e:' + e.toLowerCase(), c.id, 'одинаковая почта');
+        for (const p of c.phones || []) { const d = p.replace(/\D/g, ''); if (d.length >= 10) add(strongB, 'p:' + d.slice(-10), c.id, 'одинаковый телефон'); }
+        for (const tg of c.telegram || []) add(strongB, 't:' + tg.toLowerCase(), c.id, 'одинаковый телеграм');
+        const nk = personKey(c.name); if (nk.split(' ').length >= 2) add(weakB, 'n:' + nk, c.id, 'одинаковое имя');
+      }
+    } else {
+      for (const o of D.outlets) {
+        if (norm(o.name) === 'без издания') continue; ids.push(o.id);
+        const w = safeUrl(o.website); if (w && !/t\.me|vk\.com|youtube|instagram|telegram/.test(w)) add(strongB, 'w:' + w.replace(/^https?:\/\/(www\.)?/, '').split('/')[0].toLowerCase(), o.id, 'один сайт');
+        const k = latKey(o.name); if (k.length >= 3) add(weakB, 'n:' + k, o.id, 'похожее название');
+      }
+    }
+    function build(buckets, maxSize) {
+      const parent = new Map(ids.map(i => [i, i]));
+      const find = x => { while (parent.get(x) !== x) { parent.set(x, parent.get(parent.get(x))); x = parent.get(x); } return x; };
+      const why = new Map();
+      for (const [, b] of buckets) {
+        if (b.ids.length < 2 || b.ids.length > maxSize) continue; // общий ящик / коммутатор редакции — не дубль
+        const [first, ...rest] = b.ids;
+        for (const id of rest) {
+          if (id === first || ignored(first, id)) continue;
+          if (kind === 'contact' && b.why !== 'одинаковое имя' && !namesCompatible(ix().contactById.get(first).name, ix().contactById.get(id).name)) continue;
+          const a = find(first), c = find(id); if (a !== c) parent.set(c, a);
+          (why.get(first) || why.set(first, new Set()).get(first)).add(b.why);
+        }
+      }
+      const groups = new Map();
+      for (const id of ids) { const r = find(id); if (!groups.has(r)) groups.set(r, []); groups.get(r).push(id); }
+      return [...groups.values()].filter(g => g.length > 1).map(g => {
+        const w = new Set(); g.forEach(id => (why.get(id) || []).forEach(x => w.add(x)));
+        return { ids: [...new Set(g)].sort((a, b) => a - b), why: [...w] };
+      });
+    }
+    const strong = build(strongB, 3).map(g => Object.assign(g, { strong: true }));
+    const inStrong = new Map(); strong.forEach((g, i) => g.ids.forEach(id => inStrong.set(id, i)));
+    // совпадения только по имени: показываем, если люди ещё не попали в одну «точную» группу
+    const weak = build(weakB, kind === 'contact' ? 4 : 6).filter(g => !(g.ids.every(id => inStrong.has(id) && inStrong.get(id) === inStrong.get(g.ids[0]))))
+      .map(g => Object.assign(g, { strong: false }));
+    return strong.concat(weak).sort((a, b) => (b.strong - a.strong) || (b.ids.length - a.ids.length));
+  }
+
+  const DupsView = {
+    mixins: [helpers], components: { Ic },
+    data: () => ({ kind: 'contact', limit: 20, keep: {}, off: {}, busy: false, rev: 0, bulkDone: 0, bulkTotal: 0 }),
+    computed: {
+      groups() { S.rev; this.rev; return findDupGroups(this.kind); },
+      shown() { return this.groups.slice(0, this.limit); },
+    },
+    watch: { kind() { this.limit = 20; this.keep = {}; } },
+    methods: {
+      row(id) { return this.kind === 'contact' ? ix().contactById.get(id) : ix().outletById.get(id); },
+      gk(g) { return g.ids.join('-'); },
+      keepOf(g) {
+        if (this.keep[this.gk(g)]) return this.keep[this.gk(g)];
+        // по умолчанию главная — самая заполненная карточка
+        const score = id => { const r = this.row(id) || {}; return this.kind === 'contact'
+          ? (r.emails || []).length + (r.phones || []).length + (r.telegram || []).length + (r.comment ? 2 : 0) + ((ix().itemsByContact.get(id) || []).length * 3) + (r.relation !== 'neutral' ? 2 : 0)
+          : (ix().byOutlet.get(id) || []).length; };
+        return g.ids.slice().sort((a, b) => score(b) - score(a))[0];
+      },
+      setKeep(g, id) { this.keep = Object.assign({}, this.keep, { [this.gk(g)]: id }); const o = Object.assign({}, this.off); delete o[id]; this.off = o; },
+      inc(id) { return !this.off[id]; },
+      toggleInc(id) { this.off = Object.assign({}, this.off, { [id]: !this.off[id] }); },
+      pitches(id) { return (ix().itemsByContact.get(id) || []).length; },
+      async mergeAll() {
+        const list = this.groups.filter(g => g.strong);
+        if (!confirm('Объединить все точные дубли: ' + list.length + ' групп? Главной в каждой станет самая заполненная карточка. Совпадения только по имени останутся для ручной проверки.')) return;
+        this.bulkDone = 0; this.bulkTotal = list.length;
+        // фиксируем, кого вливать, до начала (список групп пересчитается только в конце)
+        const plan = list.map(g => ({ ids: g.ids, keep: this.keepOf(g) }));
+        for (const g of plan) { this.keep[g.ids.join('-')] = g.keep; await this.merge(g, true); this.bulkDone++; }
+        await loadData();
+        this.bulkTotal = 0; toast('Готово: объединено ' + list.length + ' групп');
+      },
+      async merge(g, quiet) {
+        const keep = this.keepOf(g), drops = g.ids.filter(id => id !== keep && this.inc(id));
+        if (!drops.length) { toast('Отметьте хотя бы одну карточку для объединения'); return; }
+        this.busy = true;
+        try {
+          if (quiet) {
+            for (const d of drops) await (this.kind === 'contact' ? api.mergeContacts(keep, d) : api.mergeOutlets(keep, d));
+          } else if (this.kind === 'contact') {
+            for (const d of drops) await api.mergeContacts(keep, d);
+            const items = await api.itemsFor(keep);
+            D.items = markRaw(D.items.filter(i => i.contact_id !== keep && !drops.includes(i.contact_id)).concat(items));
+            D.moves.forEach(m => { if (drops.includes(m.contact_id)) m.contact_id = keep; });
+            if (drops.some(d => D.favorites.has(d))) { drops.forEach(d => D.favorites.delete(d)); D.favorites.add(keep); }
+            D.contacts = markRaw(D.contacts.filter(c => !drops.includes(c.id)));
+            await actions.refreshRows('contacts', 'contacts', [keep]);
+          } else {
+            for (const d of drops) await api.mergeOutlets(keep, d);
+            D.contacts.forEach(c => { if (drops.includes(c.outlet_id)) c.outlet_id = keep; });
+            D.items.forEach(i => { if (drops.includes(i.outlet_id)) i.outlet_id = keep; });
+            D.outlets = markRaw(D.outlets.filter(o => !drops.includes(o.id)));
+            await actions.refreshRows('outlets', 'outlets', [keep]);
+          }
+          if (!quiet) toast('Объединено');
+        } catch (e) { toast('Ошибка: ' + e.message); } finally { this.busy = false; }
+      },
+      async notDup(g) {
+        this.busy = true;
+        try {
+          for (const a of g.ids) for (const b of g.ids) if (a < b) { await api.dupIgnore(this.kind, a, b); D.ignores.push({ kind: this.kind, a, b }); }
+          this.rev++; toast('Больше не будем предлагать эту группу');
+        } catch (e) { toast('Ошибка: ' + e.message); } finally { this.busy = false; }
+      },
+    },
+    template: `
+<div class="stack" style="gap:14px">
+  <div class="row wrap">
+    <div class="seg"><button :class="{on: kind==='contact'}" @click="kind='contact'">Журналисты</button><button :class="{on: kind==='outlet'}" @click="kind='outlet'">Издания</button></div>
+    <span class="muted grow">Найдено групп: {{ groups.length }}, из них точных: {{ groups.filter(g => g.strong).length }}. Сначала идут точные совпадения (почта, телефон, телеграм, сайт), потом совпадения только по имени.</span>
+    <button v-if="groups.some(g => g.strong)" class="btn" :disabled="busy || bulkTotal" @click="mergeAll">Объединить все точные</button>
+  </div>
+  <div v-if="bulkTotal" class="card stack"><div>Объединяем… {{ bulkDone }} из {{ bulkTotal }}. Не закрывайте вкладку.</div><div class="progress"><i :style="{width: (bulkDone / bulkTotal * 100) + '%'}"></i></div></div>
+  <div v-if="!groups.length" class="empty">Дублей не найдено 🎉</div>
+  <div v-for="g in shown" :key="gk(g)" class="card stack">
+    <div class="row wrap"><span class="status" :class="g.strong ? 'interest' : ''">{{ g.strong ? 'точно дубль' : 'возможно' }}</span><span class="small muted">{{ g.why.join(', ') }}</span></div>
+    <div class="scroll-x"><table class="tbl">
+      <tbody>
+        <tr v-for="id in g.ids" :key="id" :style="keepOf(g)===id ? 'background:var(--row-active)' : ''">
+          <td style="width:30px" title="Главная карточка"><input type="radio" :name="'k' + gk(g)" :checked="keepOf(g)===id" @change="setKeep(g, id)" aria-label="Оставить главной"></td>
+          <td style="width:30px" title="Участвует в объединении"><input type="checkbox" :checked="keepOf(g)===id || inc(id)" :disabled="keepOf(g)===id" @change="toggleInc(id)" aria-label="Включить в объединение"></td>
+          <template v-if="kind==='contact'">
+            <td><a href="#" @click.prevent="openContact(id)"><b>{{ row(id).name }}</b></a><div class="small muted">{{ row(id).role }}</div></td>
+            <td>{{ outletName(row(id).outlet_id) }}</td>
+            <td class="small">{{ (row(id).emails||[]).join(', ') }}<div>{{ (row(id).phones||[]).join(', ') }} {{ (row(id).telegram||[]).join(', ') }}</div></td>
+            <td class="small muted">питчей: {{ pitches(id) }}<div>{{ (row(id).sources||[]).join(', ') }}</div></td>
+          </template>
+          <template v-else>
+            <td><a href="#" @click.prevent="openOutlet(id)"><b>{{ row(id).name }}</b></a><div class="small muted">{{ row(id).website }}</div></td>
+            <td>{{ typeLabel(row(id)) }}</td>
+            <td class="small">{{ (row(id).geo||[]).join(', ') }}</td>
+            <td class="small muted">контактов: {{ (ix().byOutlet.get(id)||[]).length }}</td>
+          </template>
+        </tr>
+      </tbody>
+    </table></div>
+    <div class="row"><span class="small muted grow">● — главная карточка, в неё переедут заметки, питчи, контакты и всё недостающее. ☑ — кого вливаем (снимите галочку, если это другой человек).</span>
+      <button class="btn" :disabled="busy" @click="notDup(g)">Это разные</button>
+      <button class="btn primary" :disabled="busy" @click="merge(g)">Объединить</button></div>
+  </div>
+  <div v-if="groups.length > limit" class="more"><button class="btn" @click="limit += 20">Показать ещё ({{ groups.length - limit }})</button></div>
+</div>`,
+  };
+  DupsView.methods.ix = () => ix();
+
+  // ====================== 2.0 · КОРЗИНА ======================
+  const TrashView = {
+    mixins: [helpers], components: { Ic },
+    data: () => ({ data: null, busy: false }),
+    async created() { this.load(); },
+    computed: {
+      rows() {
+        if (!this.data) return [];
+        const L = { outlets: 'Издание', contacts: 'Контакт', campaigns: 'Инфоповод' };
+        return ['contacts', 'outlets', 'campaigns'].flatMap(t => this.data[t].map(r => ({ t, label: L[t], r, name: r.name || r.title, left: 30 - daysAgo(r.deleted_at) })))
+          .sort((a, b) => b.r.deleted_at.localeCompare(a.r.deleted_at));
+      },
+    },
+    methods: {
+      async load() { this.data = await safe(() => api.trash()); },
+      async restore(x) {
+        this.busy = true;
+        try {
+          const row = await api.restore(x.t, x.r.id);
+          if (x.t === 'contacts') { upsertLocal('contacts', row); const items = await api.itemsFor(row.id); D.items = markRaw(D.items.filter(i => i.contact_id !== row.id).concat(items)); rebuildIndex(); bump(); }
+          else if (x.t === 'outlets') upsertLocal('outlets', row);
+          else await loadData();
+          toast('Восстановлено'); await this.load();
+        } catch (e) { toast('Ошибка: ' + e.message); } finally { this.busy = false; }
+      },
+      async purge(x) {
+        if (!confirm('Удалить «' + x.name + '» навсегда? Это нельзя отменить.')) return;
+        await safe(() => api.remove(x.t, x.r.id), 'Удалено навсегда'); await this.load();
+      },
+    },
+    template: `
+<div class="stack" style="gap:14px">
+  <div class="muted">Удалённое хранится здесь 30 дней, потом стирается автоматически.</div>
+  <div v-if="!data" class="loading">Загружаем…</div>
+  <div v-else-if="!rows.length" class="empty">Корзина пуста</div>
+  <div v-else class="card scroll-x" style="padding:0"><table class="tbl">
+    <thead><tr><th>Что</th><th>Название</th><th>Удалил(а)</th><th>Когда</th><th>Осталось</th><th></th></tr></thead>
+    <tbody><tr v-for="x in rows" :key="x.t + x.r.id">
+      <td class="small">{{ x.label }}</td><td><b>{{ x.name }}</b></td><td>{{ pname(x.r.deleted_by) }}</td><td>{{ fmtDate(x.r.deleted_at) }}</td>
+      <td class="small">{{ x.left }} дн.</td>
+      <td class="nowrap"><button class="btn sm" :disabled="busy" @click="restore(x)">Восстановить</button>
+        <button class="btn ghost sm" style="color:var(--danger)" :disabled="busy" @click="purge(x)" aria-label="Удалить навсегда"><Ic n="trash"/></button></td>
+    </tr></tbody></table></div>
+</div>`,
+  };
+
   // ====================== АДМИНКА ======================
   const AdminView = {
-    mixins: [helpers], components: { Ic },
+    mixins: [helpers], components: { Ic, DupsView, TrashView },
     data: () => ({ tab: 'users', newTopic: '', newTag: '', days: D.settings.collision_days || 7, file: null, preview: null, importing: false, progress: 0, importLog: '' }),
     created() { if (!D.contacts.length) this.tab = 'import'; },
     computed: {
@@ -1355,7 +1734,7 @@
 <div style="max-width:980px">
   <div class="page-head"><h1>Управление</h1></div>
   <div class="seg" style="margin-bottom:16px">
-    <button v-for="t in [['users','Пользователи'],['dicts','Справочники'],['import','Загрузка базы'],['export','Выгрузка']]" :key="t[0]" :class="{on: tab===t[0]}" @click="tab=t[0]">{{ t[1] }}</button>
+    <button v-for="t in [['users','Пользователи'],['dicts','Справочники'],['dups','Дубли'],['trash','Корзина'],['import','Загрузка базы'],['export','Выгрузка']]" :key="t[0]" :class="{on: tab===t[0]}" @click="tab=t[0]">{{ t[1] }}</button>
   </div>
 
   <div v-if="tab==='users'" class="stack" style="gap:16px">
@@ -1388,6 +1767,8 @@
     <div><button class="btn primary" :disabled="!preview || importing" @click="runImport">{{ importing ? 'Загружаем… ' + progress + '%' : 'Загрузить' }}</button></div>
   </div>
 
+  <DupsView v-if="tab==='dups'" />
+  <TrashView v-if="tab==='trash'" />
   <div v-if="tab==='export'" class="card stack">
     <h2 class="h2">Полная выгрузка в Excel</h2>
     <div class="muted">Все издания, контакты и история питчей в одном файле. Это бэкап и способ передать карту дальше.</div>
@@ -1398,7 +1779,7 @@
 
   // ====================== КОРЕНЬ ======================
   const Root = {
-    components: { Login, Nav, MapView, ContactDrawer, OutletDrawer, ContactForm, OutletForm, CampaignForm, AddToCampaign, Picker, CampaignsView, CampaignView, PoolView, DashView, SettingsView, AdminView },
+    components: { Login, Nav, MapView, ContactDrawer, OutletDrawer, ContactForm, OutletForm, CampaignForm, AddToCampaign, Picker, CampaignsView, CampaignView, PoolView, DashView, SettingsView, AdminView, MoveModal, BulkEdit },
     computed: { s: () => S },
     mounted() {
       boot();
@@ -1439,6 +1820,8 @@
   <CampaignForm v-if="s.modal && s.modal.kind==='campaignForm'" :m="s.modal" />
   <AddToCampaign v-if="s.modal && s.modal.kind==='addToCampaign'" :m="s.modal" />
   <Picker v-if="s.modal && s.modal.kind==='picker'" :m="s.modal" />
+  <MoveModal v-if="s.modal && s.modal.kind==='move'" :m="s.modal" />
+  <BulkEdit v-if="s.modal && s.modal.kind==='bulk'" :m="s.modal" />
 </div>
 <div v-if="s.toast" class="toast" role="status">{{ s.toast }}</div>`,
   };
