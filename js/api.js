@@ -52,11 +52,23 @@
       onAuth(cb) { sb.auth.onAuthStateChange((ev, s) => cb(ev, s ? s.user : null)); },
 
       async loadAll(progress) {
-        try { const r = await this.loadAllV2(progress, true); await this.loadStage2(r); return r; }
+        try { const r = await this.loadAllV2(progress, true); await this.loadStage2(r); if (r.stage2) await this.loadStage3(r); return r; }
         catch (e) {
           // база ещё не обновлена до 2.0 — работаем в прежнем режиме и просим админа применить обновление
           if (!/deleted_at|contact_moves|dup_ignores|does not exist|schema cache/i.test(e.message)) throw e;
           const r = await this.loadAllV2(progress, false); r.needsUpdate = 'update-2.0-stage1.sql'; return r;
+        }
+      },
+      async loadStage3(r) {
+        try {
+          const [events, guests] = await Promise.all([
+            fetchAll('events', '*', 'id', null, q => q.is('deleted_at', null)),
+            fetchAll('event_guests', '*'),
+          ]);
+          Object.assign(r, { events, guests, stage3: true });
+        } catch (e) {
+          if (!/does not exist|schema cache/i.test(e.message)) throw e;
+          Object.assign(r, { needsUpdate: 'update-2.0-stage3.sql' });
         }
       },
       async loadStage2(r) {
@@ -134,8 +146,8 @@
       async trash() {
         const q = t => sb.from(t).select('*').not('deleted_at', 'is', null).order('deleted_at', { ascending: false }).limit(500).then(must);
         const soft = t => q(t).catch(() => []);
-        const [outlets, contacts, campaigns, clients, mailing_lists] = await Promise.all([q('outlets'), q('contacts'), q('campaigns'), soft('clients'), soft('mailing_lists')]);
-        return { outlets, contacts, campaigns, clients, mailing_lists };
+        const [outlets, contacts, campaigns, clients, mailing_lists, events] = await Promise.all([q('outlets'), q('contacts'), q('campaigns'), soft('clients'), soft('mailing_lists'), soft('events')]);
+        return { outlets, contacts, campaigns, clients, mailing_lists, events };
       },
       async purgeTrash() { return must(await sb.rpc('purge_trash')); },
       async moveContact(id, to, role) { must(await sb.rpc('move_contact', { p_contact: id, p_to: to, p_role: role || null })); },
@@ -170,8 +182,8 @@
     const clone = x => JSON.parse(JSON.stringify(x));
     const me = db.profiles[0];
     let logged = false;
-    const tables = { outlets: 1, contacts: 1, campaigns: 1, campaign_items: 1, notes: 1, clients: 1, mailing_lists: 1, mailing_sends: 1, notifications: 1, verify_tasks: 1 };
-    for (const k of ['clients', 'mailing_lists', 'mailing_members', 'mailing_sends', 'notifications', 'verify_tasks']) db[k] = db[k] || [];
+    const tables = { outlets: 1, contacts: 1, campaigns: 1, campaign_items: 1, notes: 1, clients: 1, mailing_lists: 1, mailing_sends: 1, notifications: 1, verify_tasks: 1, events: 1, event_guests: 1 };
+    for (const k of ['clients', 'mailing_lists', 'mailing_members', 'mailing_sends', 'notifications', 'verify_tasks', 'events', 'event_guests']) db[k] = db[k] || [];
     for (const k of Object.keys(tables)) seq[k] = db[k].reduce((m, r) => Math.max(m, r.id || 0), 0);
     db.contact_moves = db.contact_moves || []; db.dup_ignores = db.dup_ignores || []; seq.contact_moves = 0;
     const auditLog = (table, id, action, diff) => db.audit_log.push({ id: ++seq.audit_log, table_name: table, row_id: id, action, changed_by: me.id, changed_at: now(), diff });
@@ -188,7 +200,7 @@
         progress && progress(100);
         const alive = a => clone(a.filter(r => !r.deleted_at));
         return {
-          stage2: true, clients: alive(db.clients), lists: alive(db.mailing_lists), members: clone(db.mailing_members), sends: clone(db.mailing_sends),
+          stage2: true, stage3: true, events: alive(db.events), guests: clone(db.event_guests), clients: alive(db.clients), lists: alive(db.mailing_lists), members: clone(db.mailing_members), sends: clone(db.mailing_sends),
           notifs: clone(db.notifications.filter(n => n.user_id === me.id).reverse()), tasks: clone(db.verify_tasks.filter(x => x.week_start === weekStart())),
           moves: clone(db.contact_moves), ignores: clone(db.dup_ignores),
           outlets: alive(db.outlets), contacts: alive(db.contacts), campaigns: alive(db.campaigns),
@@ -211,6 +223,13 @@
         const out = [];
         if (table === 'mailing_members') {
           for (const row of rows) if (!db.mailing_members.some(m => m.list_id === row.list_id && m.contact_id === row.contact_id)) { const m = Object.assign({ added_at: now(), added_by: me.id }, row); db.mailing_members.push(m); out.push(clone(m)); }
+          return out;
+        }
+        if (table === 'event_guests') {
+          for (const row of rows) {
+            if (db.event_guests.some(i => i.event_id === row.event_id && i.contact_id === row.contact_id)) continue;
+            out.push(await this.insert(table, Object.assign({ status: 'planned', owner: me.id, updated_at: now() }, row)));
+          }
           return out;
         }
         for (const row of rows) {
@@ -265,7 +284,7 @@
       async restore(table, id) { return this.update(table, id, { deleted_at: null, deleted_by: null }); },
       async trash() {
         const q = t => clone(db[t].filter(r => r.deleted_at).sort((a, b) => b.deleted_at.localeCompare(a.deleted_at)));
-        return { outlets: q('outlets'), contacts: q('contacts'), campaigns: q('campaigns'), clients: q('clients'), mailing_lists: q('mailing_lists') };
+        return { outlets: q('outlets'), contacts: q('contacts'), campaigns: q('campaigns'), clients: q('clients'), mailing_lists: q('mailing_lists'), events: q('events') };
       },
       async purgeTrash() {
         const old = r => r.deleted_at && Date.now() - new Date(r.deleted_at) > 30 * 864e5;

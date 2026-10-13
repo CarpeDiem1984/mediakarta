@@ -8,6 +8,7 @@
   const REL = { warm: '● Тёплый', neutral: '○ Нейтральный', cold: '● Негатив' };
   const STATUS = { not_sent: 'Не отправлено', sent: 'Отправлено', no_reply: 'Нет ответа', declined: 'Отказ', interest: 'Интерес', published: 'Вышла публикация' };
   const STATUS_ORDER = ['not_sent', 'sent', 'no_reply', 'declined', 'interest', 'published'];
+  const GUEST = { planned: 'в списке', invited: 'пригласили', confirmed: 'подтвердил', declined: 'отказался', attended: 'пришёл', no_show: 'не пришёл' };
   const CHANNEL = { email: 'Почта', telegram: 'Telegram', phone: 'Звонок', meeting: 'Встреча', other: 'Другое' };
   const THEMES = [
     { id: 'calm', name: 'Тишина', bg: '#FFFFFF', side: '#F6F6F4', ink: '#1D1D1F', acc: '#2F4BC4', line: '#ECECEA' },
@@ -22,10 +23,10 @@
 
   // ====================== хранилище ======================
   const S = reactive({
-    mode: api.mode, booting: true, tick: Date.now(), stage2: false, clientId: null, listId: null, user: null, me: null, loadingPct: 0, loadError: '',
+    mode: api.mode, booting: true, tick: Date.now(), stage2: false, stage3: false, clientId: null, listId: null, eventId: null, reportCampaignId: null, reportClientId: null, user: null, me: null, loadingPct: 0, loadError: '',
     view: 'map', campaignId: null, drawer: null, modal: null, toast: '', rev: 0,
   });
-  const D = { outlets: [], contacts: [], campaigns: [], items: [], profiles: [], favorites: new Set(), dict: { topic: [], tag: [] }, settings: { collision_days: 7 }, moves: [], ignores: [], clients: [], lists: [], members: [], sends: [], notifs: [], tasks: [] };
+  const D = { outlets: [], contacts: [], campaigns: [], items: [], profiles: [], favorites: new Set(), dict: { topic: [], tag: [] }, settings: { collision_days: 7 }, moves: [], ignores: [], clients: [], lists: [], members: [], sends: [], notifs: [], tasks: [], events: [], guests: [] };
   let IX = {};
   const bump = () => { S.rev++; };
 
@@ -74,9 +75,38 @@
     for (const m of D.members) { if (!membersByList.has(m.list_id)) membersByList.set(m.list_id, []); membersByList.get(m.list_id).push(m.contact_id); }
     const sendsByContact = new Map();
     for (const s of D.sends) for (const cid of s.contact_ids || []) { if (!sendsByContact.has(cid)) sendsByContact.set(cid, []); sendsByContact.get(cid).push(s); }
-    IX = { outletById, contactById, byOutlet, orphan, itemsByContact, itemsByCampaign, lastPitch, lastPitchOutlet, profileById, movesByContact, movedFromOutlet, clientById, membersByList, sendsByContact };
+    const guestsByContact = new Map(), guestsByEvent = new Map();
+    for (const g of D.guests) {
+      if (!guestsByContact.has(g.contact_id)) guestsByContact.set(g.contact_id, []); guestsByContact.get(g.contact_id).push(g);
+      if (!guestsByEvent.has(g.event_id)) guestsByEvent.set(g.event_id, []); guestsByEvent.get(g.event_id).push(g);
+    }
+    const respByContact = new Map();
+    for (const it of D.items) {
+      if (it.status === 'not_sent') continue;
+      if (!respByContact.has(it.contact_id)) respByContact.set(it.contact_id, newResp());
+      addResp(respByContact.get(it.contact_id), it);
+    }
+    IX = { outletById, contactById, byOutlet, orphan, itemsByContact, itemsByCampaign, lastPitch, lastPitchOutlet, profileById, movesByContact, movedFromOutlet, clientById, membersByList, sendsByContact,
+      guestsByContact, guestsByEvent, respByContact };
   }
   const ix = () => (S.rev, IX);
+  // отзывчивость: сколько питчей получил и на сколько отреагировал
+  function newResp() { return { sent: 0, replied: 0, interest: 0, declined: 0, published: 0, noreply: 0 }; }
+  function addResp(r, it) {
+    r.sent++;
+    if (it.status === 'interest') { r.interest++; r.replied++; }
+    else if (it.status === 'published') { r.published++; r.replied++; }
+    else if (it.status === 'declined') { r.declined++; r.replied++; }
+    else r.noreply++;
+  }
+  function respBadge(r) {
+    if (!r || r.sent < 2) return null;
+    if (r.published >= 2 || (r.sent >= 3 && r.published / r.sent >= 0.34)) return { t: 'часто берёт', cls: 'published' };
+    if (r.sent >= 3 && r.replied / r.sent >= 0.5) return { t: 'отвечает', cls: 'interest' };
+    if (r.sent >= 4 && r.replied === 0) return { t: 'не отвечает', cls: 'declined' };
+    return null;
+  }
+  const pct = (a, b) => b ? Math.round(a / b * 100) : 0;
 
   // ====================== утилиты ======================
   const pad = n => String(n).padStart(2, '0');
@@ -185,7 +215,8 @@
       D.dict = { topic: r.dictionaries.filter(d => d.kind === 'topic').map(d => d.value), tag: r.dictionaries.filter(d => d.kind === 'tag').map(d => d.value) };
       D.settings = Object.assign({ collision_days: 7 }, r.settings);
       D.moves = markRaw(r.moves || []); D.ignores = markRaw(r.ignores || []);
-      S.stage2 = !!r.stage2;
+      S.stage2 = !!r.stage2; S.stage3 = !!r.stage3;
+      D.events = markRaw(r.events || []); D.guests = markRaw(r.guests || []);
       D.clients = markRaw(r.clients || []); D.lists = markRaw(r.lists || []); D.members = markRaw(r.members || []);
       D.sends = markRaw(r.sends || []); D.notifs = markRaw(r.notifs || []); D.tasks = markRaw(r.tasks || []);
       { const cids = new Set(D.contacts.map(c => c.id)), kids = new Set(D.campaigns.map(c => c.id)); D.items = markRaw(D.items.filter(i => cids.has(i.contact_id) && kids.has(i.campaign_id))); }
@@ -230,6 +261,13 @@
       for (const r of res) D.items.push(r);
       rebuildIndex(); bump();
       return { added: res.length, skipped: contactIds.length - res.length };
+    },
+    async addToEvent(eventId, ids) {
+      const have = new Set((ix().guestsByEvent.get(eventId) || []).map(g => g.contact_id));
+      const rows = ids.filter(id => !have.has(id)).map(id => ({ event_id: eventId, contact_id: id, owner: S.me.id, status: 'planned' }));
+      const res = await api.insertMany('event_guests', rows, 'event_id,contact_id');
+      for (const r of res) D.guests.push(r); rebuildIndex(); bump();
+      return { added: res.length };
     },
     async addToList(listId, ids) {
       const have = new Set(ix().membersByList.get(listId) || []);
@@ -331,7 +369,7 @@
       counts() {
         S.rev; const mine = D.tasks.filter(t => S.me && t.user_id === S.me.id);
         return { outlets: D.outlets.length, pool: D.favorites.size, camps: D.campaigns.filter(c => !c.archived).length, clients: D.clients.filter(c => !c.archived).length, lists: D.lists.length,
-          verify: mine.length ? mine.filter(t => !t.result).length || '✓' : '' };
+          verify: mine.length ? mine.filter(t => !t.result).length || '✓' : '', events: D.events.filter(e => !e.archived && (!e.event_at || new Date(e.event_at) > Date.now() - 864e5)).length || '' };
       },
     },
     template: `
@@ -346,6 +384,8 @@
     <a :class="{active: s.view==='mailings' || s.view==='mailing'}" @click="go('mailings')">Рассылки <span class="count">{{ counts.lists }}</span></a>
     <a :class="{active: s.view==='verify'}" @click="go('verify')">Актуализация <span class="count">{{ counts.verify }}</span></a>
   </template>
+  <a v-if="s.stage3" :class="{active: s.view==='events' || s.view==='event'}" @click="go('events')">Мероприятия <span class="count">{{ counts.events }}</span></a>
+  <a :class="{active: s.view==='analytics'}" @click="go('analytics')">Аналитика</a>
   <a :class="{active: s.view==='settings'}" @click="go('settings')">Настройки</a>
   <template v-if="isAdmin()">
     <div class="group label">Администратор</div>
@@ -468,6 +508,8 @@
       clearChip(k) { if (k === 'q') { this.q = ''; this.qd = ''; } else this[k] = k === 'pool' ? false : ''; },
       bulk() { S.modal = { kind: 'bulk', ids: [...this.selected], done: () => this.clearSel() }; },
       toList() { S.modal = { kind: 'addToList', ids: [...this.selected], done: () => this.clearSel() }; },
+      toEvent() { S.modal = { kind: 'addToEvent', ids: [...this.selected], done: () => this.clearSel() }; },
+      badge(id) { return respBadge(ix().respByContact.get(id)); },
       reset() { Object.assign(this, { q: '', qd: '', type: '', topic: '', geo: '', tier: '', relation: '', pool: false, stale: '', verified: '' }); },
       toCampaign() { S.modal = { kind: 'addToCampaign', ids: [...this.selected], done: () => this.clearSel() }; },
       copyEmails() {
@@ -547,7 +589,7 @@
             <input type="checkbox" :checked="isSel(c.id)" @change="sel(c.id, $event.target.checked)" :aria-label="'Выбрать ' + c.name" style="margin-left:8px">
           </span>
           <div style="min-width:0">
-            <div class="jname ellipsis"><Ic v-if="isFav(c.id)" n="star" :s="13" fill="var(--star)" style="color:var(--star);margin-right:4px;vertical-align:-1px"/><template v-for="(p,i) in hl(c.name)" :key="i"><mark v-if="p.m">{{ p.t }}</mark><template v-else>{{ p.t }}</template></template></div>
+            <div class="jname ellipsis"><span v-if="badge(c.id)" class="status" :class="badge(c.id).cls" style="float:right; margin-left:6px; font-size:11px">{{ badge(c.id).t }}</span><Ic v-if="isFav(c.id)" n="star" :s="13" fill="var(--star)" style="color:var(--star);margin-right:4px;vertical-align:-1px"/><template v-for="(p,i) in hl(c.name)" :key="i"><mark v-if="p.m">{{ p.t }}</mark><template v-else>{{ p.t }}</template></template></div>
             <div class="small muted ellipsis">{{ c.is_desk ? (c.role || 'общий ящик') + ' · ' + ((c.emails||[])[0] || (c.phones||[])[0] || '') : (c.role || '—') }}</div>
           </div>
           <div class="rel" :class="c.relation">{{ c.is_desk ? '' : relLabel(c.relation) }}</div>
@@ -565,6 +607,7 @@
     <span class="grow"></span>
     <button class="btn primary" @click="toCampaign"><Ic n="send"/> В инфоповод</button>
     <button v-if="s.stage2" class="btn" @click="toList"><Ic n="plus"/> В рассылку</button>
+    <button v-if="s.stage3" class="btn" @click="toEvent"><Ic n="plus"/> На мероприятие</button>
     <button class="btn" @click="bulk"><Ic n="edit"/> Изменить разом</button>
     <button class="btn" @click="copyEmails"><Ic n="copy"/> Скопировать почты</button>
     <button class="btn" @click="exportSel"><Ic n="down"/> Excel</button>
@@ -591,6 +634,13 @@
       tagOptions() { S.rev; return D.dict.tag; },
       career() { S.rev; return ix().movesByContact.get(this.id) || []; },
       mailings() { S.rev; return (ix().sendsByContact.get(this.id) || []).slice().sort((a, b) => b.sent_at.localeCompare(a.sent_at)); },
+      resp() { S.rev; return ix().respByContact.get(this.id); },
+      respB() { return respBadge(this.resp); },
+      evs() {
+        S.rev; return (ix().guestsByContact.get(this.id) || []).map(g => ({ g, e: D.events.find(e => e.id === g.event_id) })).filter(x => x.e)
+          .sort((a, b) => (b.e.event_at || '').localeCompare(a.e.event_at || ''));
+      },
+      evStat() { const past = this.evs.filter(x => ['attended', 'no_show'].includes(x.g.status)); return { came: past.filter(x => x.g.status === 'attended').length, of: past.length }; },
       stage2: () => S.stage2,
     },
     watch: { id: { immediate: true, handler() { this.load(); } } },
@@ -646,6 +696,7 @@
         const re = new RegExp('(' + names.map(n => '@' + n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')', 'gi');
         return body.split(re).filter(Boolean).map(t => ({ t, m: /^@/.test(t) && names.some(n => ('@' + n).toLowerCase() === t.toLowerCase()) }));
       },
+      pct, guestLabel: s => GUEST[s] || s,
       async toggleUnsub() { await safe(() => actions.saveContact(this.c.id, { unsubscribed: !this.c.unsubscribed }), this.c.unsubscribed ? 'Снова получает рассылки' : 'Больше не попадёт в рассылки'); },
       async toggleInactive() { await safe(() => actions.saveContact(this.c.id, { inactive: !this.c.inactive }), this.c.inactive ? 'Контакт снова активен' : 'Помечен «не работает» и скрыт из медиакарты'); },
       async delNote(n) {
@@ -705,6 +756,12 @@
       <span class="v"><span class="seg"><button v-for="r in ['warm','neutral','cold']" :key="r" :class="{on: c.relation===r}" @click="setRel(r)"><span class="rel" :class="r">{{ relLabel(r) }}</span></button></span></span></template>
     <span class="k">Публикация</span>
     <span class="v"><template v-if="c.last_pub_url"><a :href="safeUrl(c.last_pub_url)" target="_blank" rel="noopener">{{ c.last_pub_date ? fmtDate(c.last_pub_date) : 'ссылка' }} ↗</a></template><span v-else class="muted">не указана · <a href="#" @click.prevent="edit">добавить</a></span></span>
+    <template v-if="resp && !c.is_desk"><span class="k">Отзывчивость</span>
+      <span class="v">ответил(а) на {{ resp.replied }} из {{ resp.sent }} ({{ pct(resp.replied, resp.sent) }}%) · публикаций: {{ resp.published }}
+        <span v-if="respB" class="status" :class="respB.cls" style="margin-left:4px">{{ respB.t }}</span></span></template>
+    <template v-if="evs.length"><span class="k">События</span>
+      <span class="v"><template v-if="evStat.of">пришёл(ла) на {{ evStat.came }} из {{ evStat.of }} · </template>
+        <template v-for="(x,i) in evs.slice(0,3)" :key="x.g.id"><a href="#" @click.prevent="go('event', {eventId: x.e.id})">{{ x.e.title }}</a> <span class="muted small">({{ guestLabel(x.g.status) }})</span><template v-if="i < Math.min(evs.length,3)-1">, </template></template></span></template>
     <template v-if="stage2 && !c.is_desk"><span class="k">Рассылки</span>
       <span class="v"><template v-if="mailings.length">получил {{ mailings.length }}, последняя {{ fmtDate(mailings[0].sent_at) }} · </template>
         <a href="#" @click.prevent="toggleUnsub">{{ c.unsubscribed ? 'отписался — вернуть' : 'отписать' }}</a></span></template>
@@ -1072,7 +1129,10 @@
     data: () => ({ q: '', type: '', topic: '', tier: '', relation: '', pool: false, sel: new Set(), rev: 0, busy: false, deskToo: false }),
     computed: {
       topics() { S.rev; return D.dict.topic; },
-      inCamp() { S.rev; return new Set(this.m.listId ? (ix().membersByList.get(this.m.listId) || []) : (ix().itemsByCampaign.get(this.m.campaignId) || []).map(i => i.contact_id)); },
+      inCamp() {
+        S.rev; if (this.m.eventId) return new Set((ix().guestsByEvent.get(this.m.eventId) || []).map(g => g.contact_id));
+        return new Set(this.m.listId ? (ix().membersByList.get(this.m.listId) || []) : (ix().itemsByCampaign.get(this.m.campaignId) || []).map(i => i.contact_id));
+      },
       list() {
         S.rev; const X = ix(); const ws = norm(this.q.trim()).split(/\s+/).filter(Boolean);
         const out = [];
@@ -1100,7 +1160,7 @@
       async add() {
         this.busy = true;
         try {
-          const r = this.m.listId ? await actions.addToList(this.m.listId, [...this.sel]) : await actions.addToCampaign(this.m.campaignId, [...this.sel]);
+          const r = this.m.eventId ? await actions.addToEvent(this.m.eventId, [...this.sel]) : this.m.listId ? await actions.addToList(this.m.listId, [...this.sel]) : await actions.addToCampaign(this.m.campaignId, [...this.sel]);
           toast('Добавлено: ' + r.added); S.modal = null;
         }
         catch (e) { toast('Ошибка: ' + e.message); } finally { this.busy = false; }
@@ -1132,7 +1192,7 @@
     <div v-if="!list.length" class="empty">Никого не нашли</div>
     <div v-if="list.length >= 300" class="small muted" style="padding:8px">Показаны первые 300. Уточните поиск.</div>
   </div>
-  <div class="foot"><span class="muted" style="margin-right:auto">Выбрано: {{ selCount }}</span><button class="btn ghost" @click="close">Отмена</button><button class="btn primary" :disabled="!selCount || busy" @click="add">{{ m.listId ? 'Добавить в рассылку' : 'Добавить в медиалист' }}</button></div>
+  <div class="foot"><span class="muted" style="margin-right:auto">Выбрано: {{ selCount }}</span><button class="btn ghost" @click="close">Отмена</button><button class="btn primary" :disabled="!selCount || busy" @click="add">{{ m.eventId ? 'Добавить в гости' : m.listId ? 'Добавить в рассылку' : 'Добавить в медиалист' }}</button></div>
 </div></div>`,
   };
 
@@ -1253,6 +1313,7 @@
     <div class="row wrap">
       <button class="btn primary" @click="pick"><Ic n="plus"/> Журналисты</button>
       <button class="btn" @click="edit"><Ic n="edit"/> Изменить</button>
+      <button class="btn" @click="go('report', {reportCampaignId: camp.id, reportClientId: null})">Отчёт для клиента</button>
       <button class="btn" @click="archive">{{ camp.archived ? 'Из архива' : 'В архив' }}</button>
       <button v-if="canDel()" class="btn ghost" style="color:var(--danger)" aria-label="Удалить инфоповод" @click="del"><Ic n="trash"/></button>
     </div>
@@ -1746,8 +1807,8 @@
     computed: {
       rows() {
         if (!this.data) return [];
-        const L = { outlets: 'Издание', contacts: 'Контакт', campaigns: 'Инфоповод', clients: 'Клиент', mailing_lists: 'Рассылка' };
-        return ['contacts', 'outlets', 'campaigns', 'clients', 'mailing_lists'].flatMap(t => (this.data[t] || []).map(r => ({ t, label: L[t], r, name: r.name || r.title, left: 30 - daysAgo(r.deleted_at) })))
+        const L = { outlets: 'Издание', contacts: 'Контакт', campaigns: 'Инфоповод', clients: 'Клиент', mailing_lists: 'Рассылка', events: 'Мероприятие' };
+        return ['contacts', 'outlets', 'campaigns', 'clients', 'mailing_lists', 'events'].flatMap(t => (this.data[t] || []).map(r => ({ t, label: L[t], r, name: r.name || r.title, left: 30 - daysAgo(r.deleted_at) })))
           .sort((a, b) => b.r.deleted_at.localeCompare(a.r.deleted_at));
       },
     },
@@ -1925,6 +1986,7 @@
     <div class="row wrap">
       <button class="btn primary" @click="newCamp"><Ic n="plus"/> Инфоповод</button>
       <button class="btn" @click="newList"><Ic n="plus"/> Рассылка</button>
+      <button class="btn" @click="go('report', {reportClientId: c.id, reportCampaignId: null})">Отчёт</button>
       <button class="btn" @click="rename"><Ic n="edit"/> Переименовать</button>
       <button class="btn" @click="archive">{{ c.archived ? 'Из архива' : 'В архив' }}</button>
       <button v-if="isAdmin() || c.created_by === meId()" class="btn ghost" style="color:var(--danger)" aria-label="В корзину" @click="del"><Ic n="trash"/></button>
@@ -2271,6 +2333,379 @@
 </div>`,
   };
 
+  // ====================== 2.0 · ОТЧЁТ ДЛЯ КЛИЕНТА ======================
+  function parseReach(s) {
+    if (!s) return 0;
+    const m = String(s).replace(/ /g, ' ').match(/(\d[\d ]*(?:[.,]\d+)?)\s*(млн|m|тыс|k|к)?/i);
+    if (!m) return 0;
+    let n = parseFloat(m[1].replace(/ /g, '').replace(',', '.'));
+    const u = (m[2] || '').toLowerCase();
+    if (u === 'млн' || u === 'm') n *= 1e6; else if (u === 'тыс' || u === 'k' || u === 'к') n *= 1e3;
+    return isFinite(n) ? Math.round(n) : 0;
+  }
+  const fmtNum = n => n >= 1e6 ? (n / 1e6).toFixed(1).replace('.0', '') + ' млн' : n >= 1e3 ? Math.round(n / 1e3) + ' тыс.' : String(n);
+
+  const ReportView = {
+    mixins: [helpers], components: { Ic },
+    data() {
+      const y = new Date(); y.setFullYear(y.getFullYear() - 1);
+      return { from: S.reportClientId ? y.toISOString().slice(0, 10) : '', to: '', showAll: false, showDeclined: false, author: (S.me && S.me.full_name) || '', title: 'Отчёт о работе со СМИ' };
+    },
+    computed: {
+      camp() { S.rev; return S.reportCampaignId ? D.campaigns.find(c => c.id === S.reportCampaignId) : null; },
+      client() { S.rev; const id = this.camp ? this.camp.client_id : S.reportClientId; return id ? ix().clientById.get(id) : null; },
+      camps() {
+        S.rev; if (this.camp) return [this.camp];
+        return D.campaigns.filter(c => c.client_id === S.reportClientId && (!this.from || (c.pitch_date || c.created_at || '') >= this.from) && (!this.to || (c.pitch_date || c.created_at || '').slice(0, 10) <= this.to));
+      },
+      items() { S.rev; const ids = new Set(this.camps.map(c => c.id)); return D.items.filter(i => ids.has(i.campaign_id)); },
+      f() { return funnel(this.items); },
+      rows() {
+        const X = ix();
+        return this.items.map(i => { const c = X.contactById.get(i.contact_id) || {}; const o = X.outletById.get(i.outlet_id || c.outlet_id) || {}; return { i, c, o, camp: D.campaigns.find(x => x.id === i.campaign_id) || {} }; });
+      },
+      pubs() { return this.rows.filter(r => r.i.status === 'published').sort((a, b) => (a.i.updated_at || '').localeCompare(b.i.updated_at || '')); },
+      reach() { const seen = new Set(); let s = 0; for (const r of this.pubs) { if (seen.has(r.o.id)) continue; seen.add(r.o.id); s += parseReach(r.o.reach); } return s; },
+      interest() { return this.rows.filter(r => r.i.status === 'interest'); },
+      declined() { return this.rows.filter(r => r.i.status === 'declined'); },
+      outlets() {
+        const m = new Map();
+        for (const r of this.rows) { if (r.i.status === 'not_sent' || !r.o.id) continue; if (!m.has(r.o.id)) m.set(r.o.id, { o: r.o, st: new Set() }); m.get(r.o.id).st.add(r.i.status); }
+        return [...m.values()].sort((a, b) => (a.o.tier || 9) - (b.o.tier || 9) || a.o.name.localeCompare(b.o.name, 'ru'));
+      },
+      byType() {
+        const out = {};
+        for (const r of this.rows) { if (r.i.status === 'not_sent') continue; const t = r.o.type || 'СМИ'; out[t] = out[t] || { sent: 0, pub: 0 }; out[t].sent++; if (r.i.status === 'published') out[t].pub++; }
+        return Object.entries(out);
+      },
+      period() {
+        if (this.camp) return fmtDate(this.camp.pitch_date || this.camp.created_at);
+        return (this.from ? fmtDate(this.from) : 'начало работы') + ' — ' + (this.to ? fmtDate(this.to) : fmtDate(new Date()));
+      },
+      bars() {
+        const f = this.f, max = Math.max(1, f.sentAll);
+        return [['Отправлено', f.sentAll], ['Ответили', f.replied], ['Интерес', f.interest + f.published], ['Вышло публикаций', f.published]].map(([l, v]) => ({ l, v, w: Math.max(2, v / max * 100) }));
+      },
+    },
+    methods: {
+      print() { window.print(); },
+      back() { if (this.camp) go('campaign', { campaignId: this.camp.id }); else go('client', { clientId: S.reportClientId }); },
+      async exportX() {
+        await exportXlsx('Отчёт — ' + (this.client ? this.client.name : '') + (this.camp ? ' — ' + this.camp.title : '') + '.xlsx'.replace(/[\\/:*?"<>|]/g, ''), [
+          ['Публикации', this.pubs.map(r => ({ 'Издание': r.o.name, 'Журналист': r.c.name, 'Инфоповод': r.camp.title, 'Ссылка': r.i.publication_url || '', 'Охват издания': r.o.reach || '' }))],
+          ['Все контакты', this.rows.filter(r => r.i.status !== 'not_sent').map(r => ({ 'Издание': r.o.name, 'Журналист': r.c.name, 'Инфоповод': r.camp.title, 'Статус': STATUS[r.i.status], 'Дата': fmtDate(r.i.sent_at) }))],
+        ]);
+      },
+    },
+    template: `
+<div>
+  <div class="no-print row wrap" style="margin-bottom:16px">
+    <a href="#" class="small" @click.prevent="back">← Назад</a><span class="grow"></span>
+    <template v-if="!camp"><span class="small muted">Период</span><input class="input" type="date" style="width:150px; height:34px" v-model="from" aria-label="С"><input class="input" type="date" style="width:150px; height:34px" v-model="to" aria-label="По"></template>
+    <label class="toggle"><input type="checkbox" v-model="showAll"> Список всех изданий</label>
+    <label class="toggle"><input type="checkbox" v-model="showDeclined"> Показать отказы</label>
+    <button class="btn" @click="exportX"><Ic n="down"/> Excel</button>
+    <button class="btn primary" @click="print"><Ic n="down"/> Печать / PDF</button>
+  </div>
+  <div class="no-print banner info small" style="margin-bottom:16px">Заголовок и подпись можно поправить прямо на странице. Для PDF нажмите «Печать / PDF» и выберите «Сохранить как PDF». Личные контакты журналистов в отчёт не попадают.</div>
+  <article class="report">
+    <header class="rep-head">
+      <div class="rep-kicker">{{ client ? client.name : 'Клиент не указан' }}</div>
+      <h1 contenteditable="true" spellcheck="false">{{ title }}</h1>
+      <div class="rep-sub">{{ camp ? 'Инфоповод: «' + camp.title + '»' : 'Инфоповодов за период: ' + camps.length }} · {{ period }}</div>
+    </header>
+    <section class="rep-kpis">
+      <div><b>{{ f.sentAll }}</b><span>журналистов получили материал</span></div>
+      <div><b>{{ pct(f.replied, f.sentAll) }}%</b><span>ответили</span></div>
+      <div><b>{{ f.interest + f.published }}</b><span>проявили интерес</span></div>
+      <div><b>{{ f.published }}</b><span>публикаций</span></div>
+      <div v-if="reach"><b>≈ {{ fmtNum(reach) }}</b><span>суммарная аудитория изданий с публикациями</span></div>
+    </section>
+    <section class="rep-sec">
+      <h2>Воронка</h2>
+      <div v-for="b in bars" :key="b.l" class="rep-bar"><span class="rep-bar-l">{{ b.l }}</span><span class="rep-bar-t"><i :style="{width: b.w + '%'}"></i></span><b>{{ b.v }}</b></div>
+      <div v-if="byType.length > 1" class="small" style="margin-top:10px">
+        <span v-for="([t, v]) in byType" :key="t" style="margin-right:18px">{{ t }}: отправлено {{ v.sent }}, вышло {{ v.pub }}</span></div>
+    </section>
+    <section class="rep-sec">
+      <h2>Публикации · {{ pubs.length }}</h2>
+      <table v-if="pubs.length" class="rep-tbl"><thead><tr><th>№</th><th>Издание</th><th>Автор</th><th v-if="!camp">Инфоповод</th><th>Аудитория</th><th>Ссылка</th></tr></thead>
+        <tbody><tr v-for="(r, k) in pubs" :key="r.i.id"><td>{{ k + 1 }}</td><td><b>{{ r.o.name }}</b><div class="small">{{ typeLabel(r.o) }}<template v-if="r.o.tier"> · Tier {{ r.o.tier }}</template></div></td><td>{{ r.c.name }}</td><td v-if="!camp">{{ r.camp.title }}</td>
+          <td>{{ r.o.reach || '—' }}</td><td class="rep-link"><a v-if="safeUrl(r.i.publication_url)" :href="safeUrl(r.i.publication_url)" target="_blank" rel="noopener">{{ r.i.publication_url.replace(/^https?:\\/\\/(www\\.)?/, '').slice(0, 60) }}</a><span v-else>—</span></td></tr></tbody></table>
+      <p v-else class="muted">Публикаций пока нет.</p>
+    </section>
+    <section v-if="interest.length" class="rep-sec">
+      <h2>В работе · {{ interest.length }}</h2>
+      <p class="small muted" style="margin-top:-6px">Журналисты проявили интерес, материалы готовятся.</p>
+      <div class="rep-cols"><div v-for="r in interest" :key="r.i.id"><b>{{ r.o.name }}</b> · {{ r.c.name }}</div></div>
+    </section>
+    <section v-if="showDeclined && declined.length" class="rep-sec">
+      <h2>Отказы · {{ declined.length }}</h2>
+      <div class="rep-cols"><div v-for="r in declined" :key="r.i.id"><b>{{ r.o.name }}</b> · {{ r.c.name }}<template v-if="r.i.note"> — {{ r.i.note }}</template></div></div>
+    </section>
+    <section v-if="showAll" class="rep-sec">
+      <h2>Кому направлялся материал · {{ outlets.length }} изданий</h2>
+      <div class="rep-cols"><div v-for="x in outlets" :key="x.o.id">{{ x.o.name }}<span v-if="x.st.has('published')" class="small"> · вышло</span></div></div>
+    </section>
+    <footer class="rep-foot">Подготовлено: <span contenteditable="true" spellcheck="false">{{ author }}</span> · {{ fmtDate(new Date()) }}</footer>
+  </article>
+</div>`,
+  };
+  ReportView.methods.pct = pct; ReportView.methods.fmtNum = fmtNum;
+
+  // ====================== 2.0 · АНАЛИТИКА ОТЗЫВЧИВОСТИ ======================
+  const AnalyticsView = {
+    mixins: [helpers], components: { Ic },
+    data: () => ({ tab: 'contact', period: '365', minSent: 2, q: '', sortBy: 'published', limit: 100 }),
+    computed: {
+      rows() {
+        S.rev; const X = ix(); const since = this.period ? Date.now() - (+this.period) * 864e5 : 0;
+        const m = new Map();
+        for (const it of D.items) {
+          if (it.status === 'not_sent' || !it.sent_at || new Date(it.sent_at) < since) continue;
+          const c = X.contactById.get(it.contact_id); if (!c) continue;
+          const key = this.tab === 'contact' ? c.id : this.tab === 'outlet' ? (it.outlet_id || c.outlet_id) : it.owner;
+          if (key == null) continue;
+          if (!m.has(key)) m.set(key, Object.assign(newResp(), { key, last: '' }));
+          const r = m.get(key); addResp(r, it); if (it.sent_at > r.last) r.last = it.sent_at;
+        }
+        const q = norm(this.q);
+        const out = [...m.values()].filter(r => r.sent >= (this.tab === 'user' ? 1 : this.minSent)).map(r => {
+          let name = '', sub = '';
+          if (this.tab === 'contact') { const c = X.contactById.get(r.key); name = c.name; sub = this.outletName(c.outlet_id); }
+          else if (this.tab === 'outlet') { const o = X.outletById.get(r.key); name = o ? o.name : '—'; sub = o ? this.typeLabel(o) : ''; }
+          else name = pname(r.key);
+          return Object.assign(r, { name, sub, rr: pct(r.replied, r.sent), pr: pct(r.published, r.sent) });
+        }).filter(r => !q || norm(r.name + ' ' + r.sub).includes(q));
+        const k = this.sortBy;
+        return out.sort((a, b) => (b[k] - a[k]) || (b.sent - a.sent));
+      },
+      totals() { const t = newResp(); for (const r of this.rows) { t.sent += r.sent; t.replied += r.replied; t.published += r.published; } return t; },
+    },
+    methods: {
+      open(r) { if (this.tab === 'contact') openContact(r.key); else if (this.tab === 'outlet') openOutlet(r.key); },
+      sort(k) { this.sortBy = k; },
+      th(k) { return this.sortBy === k ? ' ↓' : ''; },
+    },
+    template: `
+<div>
+  <div class="page-head"><div><h1>Аналитика</h1><div class="muted small" style="margin-top:6px">Кто реально отвечает и берёт материалы. Считается по статусам в медиалистах инфоповодов.</div></div></div>
+  <div class="row wrap" style="margin-bottom:14px">
+    <div class="seg"><button :class="{on: tab==='contact'}" @click="tab='contact'">Журналисты</button><button :class="{on: tab==='outlet'}" @click="tab='outlet'">Издания</button><button :class="{on: tab==='user'}" @click="tab='user'">Сотрудники</button></div>
+    <select class="fselect" v-model="period" aria-label="Период"><option value="30">30 дней</option><option value="90">3 месяца</option><option value="365">год</option><option value="">всё время</option></select>
+    <select v-if="tab!=='user'" class="fselect" v-model.number="minSent" aria-label="Минимум питчей"><option :value="1">от 1 питча</option><option :value="2">от 2 питчей</option><option :value="3">от 3 питчей</option><option :value="5">от 5 питчей</option></select>
+    <input class="input" style="max-width:240px; height:34px" v-model="q" placeholder="Найти" aria-label="Найти">
+    <span class="grow"></span><span class="small muted">Всего: {{ totals.sent }} питчей, ответили {{ pct(totals.replied, totals.sent) }}%, вышло {{ totals.published }}</span>
+  </div>
+  <div v-if="!rows.length" class="empty">Данных пока мало. Аналитика наполнится, когда вы начнёте вести статусы в инфоповодах.</div>
+  <div v-else class="card scroll-x" style="padding:0"><table class="tbl" style="min-width:760px">
+    <thead><tr><th>{{ tab==='contact' ? 'Журналист' : tab==='outlet' ? 'Издание' : 'Сотрудник' }}</th>
+      <th class="click" style="cursor:pointer" @click="sort('sent')">Питчей{{ th('sent') }}</th>
+      <th style="cursor:pointer" @click="sort('rr')">Ответили{{ th('rr') }}</th>
+      <th style="cursor:pointer" @click="sort('interest')">Интерес{{ th('interest') }}</th>
+      <th style="cursor:pointer" @click="sort('declined')">Отказ{{ th('declined') }}</th>
+      <th style="cursor:pointer" @click="sort('published')">Вышло{{ th('published') }}</th>
+      <th style="cursor:pointer" @click="sort('pr')">% публикаций{{ th('pr') }}</th><th>Последний питч</th></tr></thead>
+    <tbody><tr v-for="r in rows.slice(0, limit)" :key="r.key" :class="{click: tab!=='user'}" @click="open(r)">
+      <td><b>{{ r.name }}</b><div class="small muted">{{ r.sub }}</div></td>
+      <td class="mono">{{ r.sent }}</td>
+      <td><div class="row" style="gap:6px"><div class="progress" style="width:60px"><i :style="{width: r.rr + '%'}"></i></div><span class="mono small">{{ r.rr }}%</span></div></td>
+      <td class="mono">{{ r.interest }}</td><td class="mono">{{ r.declined }}</td><td class="mono"><b>{{ r.published }}</b></td><td class="mono">{{ r.pr }}%</td>
+      <td class="small">{{ agoText(r.last) }}</td>
+    </tr></tbody></table>
+    <div v-if="rows.length > limit" class="more"><button class="btn" @click="limit += 100">Показать ещё</button></div>
+  </div>
+</div>`,
+  };
+  AnalyticsView.methods.pct = pct;
+
+  // ====================== 2.0 · МЕРОПРИЯТИЯ ======================
+  const GUEST_ORDER = ['planned', 'invited', 'confirmed', 'declined', 'attended', 'no_show'];
+  function guestFunnel(gs) { const f = { total: gs.length }; GUEST_ORDER.forEach(k => f[k] = 0); gs.forEach(g => f[g.status]++); return f; }
+
+  const EventForm = {
+    mixins: [helpers], props: { m: Object },
+    data() {
+      const e = this.m.id ? D.events.find(x => x.id === this.m.id) : null;
+      const cl = e && e.client_id ? D.clients.find(c => c.id === e.client_id) : null;
+      const dt = e && e.event_at ? new Date(e.event_at) : null;
+      const local = dt ? new Date(dt.getTime() - dt.getTimezoneOffset() * 6e4).toISOString().slice(0, 16) : '';
+      return { title: e ? e.title : '', client: cl ? cl.name : '', at: local, place: e ? e.place || '' : '', description: e ? e.description || '' : '', clients: D.clients.map(c => c.name), busy: false, err: '' };
+    },
+    methods: {
+      close() { S.modal = null; },
+      async save() {
+        if (!this.title.trim()) { this.err = 'Назовите мероприятие'; return; }
+        this.busy = true;
+        try {
+          let cl = this.client.trim() ? D.clients.find(c => norm(c.name) === norm(this.client.trim())) : null;
+          if (this.client.trim() && !cl) { cl = await api.insert('clients', { name: this.client.trim() }); D.clients.push(cl); }
+          const patch = { title: this.title.trim(), client_id: cl ? cl.id : null, event_at: this.at ? new Date(this.at).toISOString() : null, place: this.place.trim() || null, description: this.description.trim() || null };
+          let row;
+          if (this.m.id) { row = await api.update('events', this.m.id, patch); Object.assign(D.events.find(x => x.id === row.id), row); }
+          else { row = await api.insert('events', patch); D.events.push(row); }
+          rebuildIndex(); bump(); S.modal = null;
+          if (this.m.thenAdd) await actions.addToEvent(row.id, this.m.thenAdd);
+          go('event', { eventId: row.id });
+        } catch (e) { this.err = e.message; } finally { this.busy = false; }
+      },
+    },
+    template: `
+<div class="modal-back" @click.self="close"><form class="modal" @submit.prevent="save">
+  <h3>{{ m.id ? 'Мероприятие' : 'Новое мероприятие' }}</h3>
+  <label class="field"><span>Название *</span><input class="input" v-model="title" required placeholder="Например: пресс-завтрак с CEO"></label>
+  <div class="grid2">
+    <label class="field"><span>Клиент</span><input class="input" v-model="client" list="mk-clients3"></label>
+    <datalist id="mk-clients3"><option v-for="n in clients" :key="n" :value="n"></option></datalist>
+    <label class="field"><span>Дата и время</span><input class="input" type="datetime-local" v-model="at"></label>
+  </div>
+  <label class="field"><span>Место</span><input class="input" v-model="place"></label>
+  <label class="field"><span>Описание, формат, спикеры</span><textarea class="textarea" v-model="description"></textarea></label>
+  <div v-if="err" class="banner">{{ err }}</div>
+  <div class="foot"><button type="button" class="btn ghost" @click="close">Отмена</button><button class="btn primary" :disabled="busy">Сохранить</button></div>
+</form></div>`,
+  };
+
+  const AddToEvent = {
+    mixins: [helpers], props: { m: Object },
+    data: () => ({ eid: '', busy: false }),
+    computed: { evs() { S.rev; return D.events.filter(e => !e.archived).sort((a, b) => (b.event_at || '').localeCompare(a.event_at || '')); } },
+    created() { if (this.evs.length) this.eid = this.evs[0].id; },
+    methods: {
+      close() { S.modal = null; },
+      async add() {
+        this.busy = true;
+        try { const r = await actions.addToEvent(+this.eid, this.m.ids); toast('Добавлено в гости: ' + r.added); this.m.done && this.m.done(); S.modal = null; }
+        catch (e) { toast('Ошибка: ' + e.message); } finally { this.busy = false; }
+      },
+      create() { S.modal = { kind: 'eventForm', id: null, thenAdd: this.m.ids.slice() }; },
+    },
+    template: `
+<div class="modal-back" @click.self="close"><div class="modal">
+  <h3>Пригласить на мероприятие</h3>
+  <div class="muted">Контактов: {{ m.ids.length }}</div>
+  <label v-if="evs.length" class="field"><span>Мероприятие</span><select class="select" v-model="eid"><option v-for="e in evs" :key="e.id" :value="e.id">{{ e.title }}{{ e.event_at ? ' · ' + fmtDate(e.event_at) : '' }}</option></select></label>
+  <div v-else class="muted">Мероприятий пока нет.</div>
+  <div class="foot"><button class="btn" @click="create">+ Новое мероприятие</button><span class="grow"></span><button class="btn ghost" @click="close">Отмена</button><button class="btn primary" :disabled="!eid || busy" @click="add">Добавить</button></div>
+</div></div>`,
+  };
+
+  const EventsView = {
+    mixins: [helpers], components: { Ic },
+    data: () => ({ past: false }),
+    computed: {
+      list() {
+        S.rev; const now = Date.now() - 864e5;
+        return D.events.filter(e => this.past ? (e.event_at && new Date(e.event_at) < now) || e.archived : !e.archived && (!e.event_at || new Date(e.event_at) >= now))
+          .sort((a, b) => this.past ? (b.event_at || '').localeCompare(a.event_at || '') : (a.event_at || '9').localeCompare(b.event_at || '9'))
+          .map(e => ({ e, f: guestFunnel(ix().guestsByEvent.get(e.id) || []), cl: e.client_id ? ix().clientById.get(e.client_id) : null }));
+      },
+    },
+    methods: { create() { S.modal = { kind: 'eventForm', id: null }; } },
+    template: `
+<div>
+  <div class="page-head"><div><h1>Мероприятия</h1><div class="muted small" style="margin-top:6px">Пресс-завтраки, презентации, аккредитации: кого пригласили, кто подтвердил и кто реально пришёл</div></div>
+    <button class="btn primary" @click="create"><Ic n="plus"/> Мероприятие</button></div>
+  <div class="seg" style="margin-bottom:14px"><button :class="{on: !past}" @click="past=false">Предстоящие</button><button :class="{on: past}" @click="past=true">Прошедшие</button></div>
+  <div v-if="!list.length" class="empty">{{ past ? 'Прошедших мероприятий нет' : 'Запланируйте первое мероприятие' }}</div>
+  <div class="stack">
+    <div v-for="x in list" :key="x.e.id" class="card row wrap" style="cursor:pointer; gap:18px" @click="go('event', {eventId: x.e.id})">
+      <div class="grow" style="min-width:220px"><div class="h2" style="margin:0">{{ x.e.title }}</div>
+        <div class="small muted">{{ x.e.event_at ? fmtDate(x.e.event_at) + ', ' + new Date(x.e.event_at).toTimeString().slice(0,5) : 'дата не указана' }}<template v-if="x.e.place"> · {{ x.e.place }}</template><template v-if="x.cl"> · {{ x.cl.name }}</template></div></div>
+      <div class="funnel" style="flex:2 1 420px">
+        <div class="f"><b>{{ x.f.total }}</b><span>в списке</span></div>
+        <div class="f"><b>{{ x.f.invited + x.f.confirmed + x.f.attended + x.f.no_show + x.f.declined }}</b><span>пригласили</span></div>
+        <div class="f"><b>{{ x.f.confirmed + x.f.attended + x.f.no_show }}</b><span>подтвердили</span></div>
+        <div class="f"><b>{{ x.f.attended }}</b><span>пришли</span></div>
+      </div>
+    </div>
+  </div>
+</div>`,
+  };
+
+  const EventView = {
+    mixins: [helpers], components: { Ic },
+    data: () => ({ fStatus: '', q: '' }),
+    computed: {
+      e() { S.rev; return D.events.find(x => x.id === S.eventId); },
+      cl() { S.rev; return this.e && this.e.client_id ? ix().clientById.get(this.e.client_id) : null; },
+      gs() { S.rev; return ix().guestsByEvent.get(S.eventId) || []; },
+      f() { return guestFunnel(this.gs); },
+      rows() {
+        const X = ix(), q = norm(this.q);
+        return this.gs.map(g => { const c = X.contactById.get(g.contact_id) || { name: '—' }; return { g, c, o: X.outletById.get(c.outlet_id), hist: this.history(c.id) }; })
+          .filter(r => (!this.fStatus || r.g.status === this.fStatus) && (!q || norm(r.c.name + ' ' + (r.o ? r.o.name : '')).includes(q)))
+          .sort((a, b) => GUEST_ORDER.indexOf(a.g.status) - GUEST_ORDER.indexOf(b.g.status) || (a.o ? a.o.name : '').localeCompare(b.o ? b.o.name : '', 'ru'));
+      },
+      profiles() { S.rev; return D.profiles; }, statuses: () => GUEST,
+    },
+    methods: {
+      history(cid) {
+        const past = (ix().guestsByContact.get(cid) || []).filter(g => g.event_id !== S.eventId && ['attended', 'no_show'].includes(g.status));
+        return past.length ? past.filter(g => g.status === 'attended').length + ' из ' + past.length : '';
+      },
+      async upd(r, key, val) { const row = await safe(() => api.update('event_guests', r.g.id, { [key]: val || null })); Object.assign(r.g, row); bump(); },
+      async remove(r) { if (!confirm('Убрать ' + r.c.name + ' из списка гостей?')) return; await safe(() => api.remove('event_guests', r.g.id)); D.guests = markRaw(D.guests.filter(g => g.id !== r.g.id)); rebuildIndex(); bump(); },
+      pick() { S.modal = { kind: 'picker', eventId: S.eventId }; },
+      edit() { S.modal = { kind: 'eventForm', id: this.e.id }; },
+      async del() {
+        if (!confirm('Убрать мероприятие «' + this.e.title + '» в корзину?')) return;
+        await safe(() => api.softDelete('events', this.e.id), 'Мероприятие в корзине'); D.events = markRaw(D.events.filter(x => x.id !== this.e.id)); rebuildIndex(); bump(); go('events');
+      },
+      copyEmails(statuses) {
+        const ems = this.gs.filter(g => !statuses || statuses.includes(g.status)).map(g => (ix().contactById.get(g.contact_id) || {}).emails || []).map(e => e[0]).filter(Boolean);
+        copy([...new Set(ems)].join(', '), ems.length + ' ' + plural(ems.length, 'адрес', 'адреса', 'адресов'));
+      },
+      async exportX() {
+        await exportXlsx('Гости — ' + this.e.title.replace(/[\\/:*?"<>|]/g, '') + '.xlsx', [['Гости', this.rows.map(r => Object.assign(contactRow(r.c), { 'Статус': GUEST[r.g.status], 'Ведёт': pname(r.g.owner), 'Заметка': r.g.note || '' }))]]);
+      },
+    },
+    template: `
+<div v-if="e">
+  <div class="page-head">
+    <div class="grow"><a href="#" class="small" @click.prevent="go('events')">← Все мероприятия</a><h1 style="margin-top:6px">{{ e.title }}</h1>
+      <div class="muted small" style="margin-top:6px">{{ e.event_at ? fmtDate(e.event_at) + ', ' + new Date(e.event_at).toTimeString().slice(0,5) : 'дата не указана' }}<template v-if="e.place"> · {{ e.place }}</template><template v-if="cl"> · <a href="#" @click.prevent="go('client', {clientId: cl.id})">{{ cl.name }}</a></template></div></div>
+    <div class="row wrap">
+      <button class="btn primary" @click="pick"><Ic n="plus"/> Гости</button>
+      <button class="btn" @click="edit"><Ic n="edit"/> Изменить</button>
+      <button class="btn ghost" style="color:var(--danger)" aria-label="В корзину" @click="del"><Ic n="trash"/></button>
+    </div>
+  </div>
+  <div v-if="e.description" class="comment-box" style="margin-bottom:16px">{{ e.description }}</div>
+  <div class="funnel" style="margin-bottom:16px">
+    <div class="f"><b>{{ f.total }}</b><span>в списке</span></div>
+    <div class="f"><b>{{ f.planned }}</b><span>ещё не пригласили</span></div>
+    <div class="f"><b>{{ f.invited }}</b><span>ждём ответа</span></div>
+    <div class="f"><b>{{ f.confirmed }}</b><span>подтвердили</span></div>
+    <div class="f"><b>{{ f.declined }}</b><span>отказались</span></div>
+    <div class="f"><b>{{ f.attended }}</b><span>пришли</span></div>
+    <div class="f"><b>{{ f.no_show }}</b><span>не пришли</span></div>
+  </div>
+  <div class="row wrap" style="margin-bottom:10px">
+    <input class="input" style="max-width:260px; height:34px" v-model="q" placeholder="Найти гостя" aria-label="Найти гостя">
+    <select class="fselect" :class="{set: fStatus}" v-model="fStatus" aria-label="Статус"><option value="">Все статусы</option><option v-for="(l,k) in statuses" :key="k" :value="k">{{ l }}</option></select>
+    <span class="grow"></span>
+    <button class="btn sm" @click="copyEmails(['planned'])"><Ic n="copy"/> Почты для приглашения</button>
+    <button class="btn sm" @click="copyEmails(['confirmed'])"><Ic n="copy"/> Почты подтвердивших</button>
+    <button class="btn sm" @click="exportX"><Ic n="down"/> Excel</button>
+  </div>
+  <div class="card scroll-x" style="padding:0"><table class="tbl" style="min-width:900px">
+    <thead><tr><th>Гость</th><th>Издание</th><th>Ведёт</th><th>Статус</th><th>Прошлые события</th><th>Заметка</th><th></th></tr></thead>
+    <tbody><tr v-for="r in rows" :key="r.g.id">
+      <td><a href="#" @click.prevent="openContact(r.c.id)"><b>{{ r.c.name }}</b></a><div class="small muted">{{ (r.c.phones||[])[0] || (r.c.emails||[])[0] || '' }}</div></td>
+      <td class="small">{{ r.o ? r.o.name : '—' }}</td>
+      <td><select class="select" style="width:130px" :value="r.g.owner" @change="upd(r, 'owner', $event.target.value)" aria-label="Кто ведёт"><option v-for="p in profiles" :key="p.id" :value="p.id">{{ p.full_name }}</option></select></td>
+      <td><select class="select" style="width:150px" :class="{'st-published': r.g.status==='attended', 'st-interest': r.g.status==='confirmed', 'st-declined': r.g.status==='declined' || r.g.status==='no_show', 'st-sent': r.g.status==='invited'}" :value="r.g.status" @change="upd(r, 'status', $event.target.value)" aria-label="Статус"><option v-for="(l,k) in statuses" :key="k" :value="k">{{ l }}</option></select></td>
+      <td class="small">{{ r.hist ? 'приходил(а) ' + r.hist : '—' }}</td>
+      <td><input class="input" :value="r.g.note" placeholder="+1, диета, аккредитация…" @change="upd(r, 'note', $event.target.value.trim())" aria-label="Заметка"></td>
+      <td><button class="icon-btn" aria-label="Убрать из гостей" @click="remove(r)"><Ic n="close"/></button></td>
+    </tr></tbody></table>
+    <div v-if="!rows.length" class="empty">Гостей пока нет. <a href="#" @click.prevent="pick">Подберите журналистов</a> или отметьте их на Медиакарте и нажмите «На мероприятие».</div>
+  </div>
+</div>
+<div v-else class="empty">Мероприятие не найдено. <a href="#" @click.prevent="go('events')">К списку</a></div>`,
+  };
+
   // ====================== АДМИНКА ======================
   const AdminView = {
     mixins: [helpers], components: { Ic, DupsView, TrashView },
@@ -2380,7 +2815,7 @@
   // ====================== КОРЕНЬ ======================
   const Root = {
     components: { Login, Nav, MapView, ContactDrawer, OutletDrawer, ContactForm, OutletForm, CampaignForm, AddToCampaign, Picker, CampaignsView, CampaignView, PoolView, DashView, SettingsView, AdminView, MoveModal, BulkEdit,
-      ClientsView, ClientView, MailingsView, MailingView, ListForm, AddToList, VerifyView },
+      ClientsView, ClientView, MailingsView, MailingView, ListForm, AddToList, VerifyView, ReportView, AnalyticsView, EventsView, EventView, EventForm, AddToEvent },
     computed: { s: () => S },
     mounted() {
       boot();
@@ -2431,7 +2866,7 @@
   <template v-if="s.loadError"><p>Не удалось загрузить базу: {{ s.loadError }}</p><button class="btn" @click="retry">Повторить</button></template>
   <template v-else>Загружаем медиакарту… {{ s.loadingPct }}%<div class="progress" style="max-width:320px; margin:12px auto"><i :style="{width: s.loadingPct + '%'}"></i></div></template>
 </div>
-<div v-else class="app" :class="{'with-drawer': !!s.drawer}">
+<div v-else class="app" :class="{'with-drawer': !!s.drawer, 'is-report': s.view==='report'}">
   <Nav />
   <main class="main">
     <div v-if="s.needsUpdate" class="banner" style="margin-bottom:16px">Вышло обновление Медиакарты, но база данных ещё не обновлена, поэтому часть новых функций пока не работает. Администратору нужно выполнить файл <b>supabase/{{ s.needsUpdate }}</b> в Supabase → SQL Editor и обновить страницу.</div>
@@ -2447,6 +2882,10 @@
     <MailingsView v-else-if="s.view==='mailings'" />
     <MailingView v-else-if="s.view==='mailing'" :key="'ml' + s.listId" />
     <VerifyView v-else-if="s.view==='verify'" />
+    <ReportView v-else-if="s.view==='report'" :key="'r' + s.reportCampaignId + '-' + s.reportClientId" />
+    <AnalyticsView v-else-if="s.view==='analytics'" />
+    <EventsView v-else-if="s.view==='events'" />
+    <EventView v-else-if="s.view==='event'" :key="'ev' + s.eventId" />
   </main>
   <div class="drawer-wrap" v-if="s.drawer">
     <ContactDrawer v-if="s.drawer.kind==='contact'" :id="s.drawer.id" :key="'c' + s.drawer.id" />
@@ -2461,6 +2900,8 @@
   <BulkEdit v-if="s.modal && s.modal.kind==='bulk'" :m="s.modal" />
   <ListForm v-if="s.modal && s.modal.kind==='listForm'" :m="s.modal" />
   <AddToList v-if="s.modal && s.modal.kind==='addToList'" :m="s.modal" />
+  <EventForm v-if="s.modal && s.modal.kind==='eventForm'" :m="s.modal" />
+  <AddToEvent v-if="s.modal && s.modal.kind==='addToEvent'" :m="s.modal" />
 </div>
 <div v-if="s.toast" class="toast" role="status">{{ s.toast }}</div>`,
   };

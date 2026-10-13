@@ -152,7 +152,16 @@ window.MK_DEMO_DATA = function () {
   people[1].tags = ['не любит рассылки'];
   const notifications = [{ id: 1, user_id: 'u-admin', kind: 'mention', contact_id: anna.id, note_id: 1, text: '@Кирилл П. она просила прислать данные до пятницы', created_by: 'u-masha', created_at: day(0), read_at: null }];
   items.filter(i => i.campaign_id === 1 && i.status === 'sent').slice(0, 2).forEach((i, k) => { i.owner = 'u-admin'; i.followup_at = new Date(Date.now() + (k ? 3 : -1) * 3600e3).toISOString(); });
+  const events = [
+    { id: 1, title: 'Пресс-завтрак: итоги года в финтехе', client_id: 1, event_at: new Date(Date.now() + 9 * 864e5).toISOString(), place: 'Москва, ресторан «Белуга»', description: 'Завтрак со спикерами клиента, 12–15 журналистов.', created_by: 'u-masha', created_at: day(5) },
+    { id: 2, title: 'Презентация мобильного приложения', client_id: 2, event_at: day(55), place: 'Москва, Digital October', description: null, created_by: 'u-admin', created_at: day(70) },
+  ];
+  const gst = ['invited', 'confirmed', 'declined', 'planned'], gst2 = ['attended', 'attended', 'no_show', 'declined'];
+  const event_guests = [];
+  people.slice(0, 10).forEach((c, k) => event_guests.push({ id: event_guests.length + 1, event_id: 1, contact_id: c.id, owner: 'u-masha', status: gst[k % 4], note: null, updated_at: day(1) }));
+  people.slice(3, 15).forEach((c, k) => event_guests.push({ id: event_guests.length + 1, event_id: 2, contact_id: c.id, owner: 'u-admin', status: gst2[k % 4], note: null, updated_at: day(50) }));
   return {
+    events, event_guests,
     clients, mailing_lists, mailing_members, mailing_sends: [], notifications, verify_tasks: [],
     profiles, outlets, contacts, campaigns, campaign_items: items, notes,
     favorites: [anna.id].concat(people.filter((_, i) => i % 11 === 0).map(c => c.id)),

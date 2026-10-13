@@ -33,7 +33,7 @@
    - **Project URL**, вида `https://xxxx.supabase.co`;
    - **Publishable key**, вида `sb_publishable_…`. Если такого нет, возьмите **anon public** на вкладке Legacy, он начинается с `eyJ…`.
 
-**Обновления базы.** После `schema.sql` по порядку выполните в SQL Editor файлы обновлений из папки `supabase`: `update-2.0-stage1.sql`, `update-2.0-stage2.sql` и следующие по номеру этапа.
+**Обновления базы.** После `schema.sql` по порядку выполните в SQL Editor файлы обновлений из папки `supabase`: `update-2.0-stage1.sql`, `update-2.0-stage2.sql`, `update-2.0-stage3.sql` и следующие по номеру этапа.
 
 ### Шаг 2. Вписать ключи
 

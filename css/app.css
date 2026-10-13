@@ -417,3 +417,39 @@ mark { background: var(--accent-soft); color: inherit; border-radius: 2px; paddi
   .main { padding: 18px 16px 60px; }
   .dash, .grid2, .grid3, .themes { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* ---------- 2.0: отчёт для клиента ---------- */
+.report { max-width: 900px; margin: 0 auto; background: #FFFFFF; color: #16161A; padding: 48px 56px; border: 1px solid var(--line); border-radius: var(--radius); font-family: 'Golos Text', system-ui, sans-serif; }
+.report a { color: #2F4BC4; }
+.report .muted { color: #6E6E73; }
+.rep-head { border-bottom: 2px solid #16161A; padding-bottom: 18px; margin-bottom: 24px; }
+.rep-kicker { font-size: 13px; text-transform: uppercase; letter-spacing: 1.2px; color: #6E6E73; }
+.rep-head h1 { margin: 6px 0 6px; font-size: 32px; line-height: 1.15; font-family: 'PT Serif', Georgia, serif; outline: none; }
+.rep-sub { font-size: 15px; color: #3D3D42; }
+.rep-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 28px; }
+.rep-kpis > div { background: #F6F6F4; border-radius: 10px; padding: 14px 16px; }
+.rep-kpis b { display: block; font-size: 28px; line-height: 1.1; }
+.rep-kpis span { font-size: 12px; color: #6E6E73; }
+.rep-sec { margin-bottom: 28px; break-inside: avoid; }
+.rep-sec h2 { font-size: 18px; margin: 0 0 12px; font-family: 'PT Serif', Georgia, serif; }
+.rep-bar { display: grid; grid-template-columns: 170px 1fr 50px; gap: 12px; align-items: center; margin: 6px 0; font-size: 14px; }
+.rep-bar-t { height: 14px; background: #EEEEEB; border-radius: 4px; overflow: hidden; }
+.rep-bar-t i { display: block; height: 100%; background: #2F4BC4; }
+.rep-bar b { text-align: right; }
+.rep-tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+.rep-tbl th { text-align: left; font-weight: 500; color: #6E6E73; border-bottom: 1px solid #16161A; padding: 6px 8px; }
+.rep-tbl td { border-bottom: 1px solid #ECECEA; padding: 8px; vertical-align: top; }
+.rep-link { word-break: break-all; max-width: 260px; }
+.rep-cols { columns: 2; column-gap: 28px; font-size: 13px; }
+.rep-cols > div { break-inside: avoid; padding: 3px 0; }
+.rep-foot { margin-top: 36px; padding-top: 12px; border-top: 1px solid #ECECEA; font-size: 12px; color: #6E6E73; }
+.rep-foot span { outline: none; }
+@media print {
+  @page { margin: 14mm; }
+  html, body { background: #FFFFFF !important; }
+  .nav, .no-print, .drawer-wrap, .toast, .banner { display: none !important; }
+  .app.is-report .main { padding: 0 !important; margin: 0 !important; }
+  .report { border: 0; padding: 0; max-width: none; }
+  .rep-kpis > div { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .rep-bar-t, .rep-bar-t i { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+}
