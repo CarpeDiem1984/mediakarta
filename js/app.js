@@ -1479,10 +1479,13 @@
   // ====================== СВОДКА ======================
   const DashView = {
     mixins: [helpers], components: { Ic },
-    data: () => ({ notes: [] }),
-    async created() { try { this.notes = await api.recentNotes(12); } catch (e) { console.error(e); } },
+    data: () => ({ notes: [], pubs: [], pubsPool: false }),
+    async created() {
+      try { this.notes = await api.recentNotes(12); } catch (e) { console.error(e); }
+      if (S.stage4) { try { this.pubs = await api.recentPubs(80); } catch (e) { console.error(e); } }
+    },
     computed: {
-      me: () => S.me,
+      s: () => S, me: () => S.me,
       stats() { S.rev; return { contacts: D.contacts.filter(c => !c.is_desk).length, outlets: D.outlets.length, pool: D.favorites.size }; },
       birthdays() {
         S.rev; return D.contacts.map(c => ({ c, d: daysToBirthday(c) })).filter(x => x.d !== null && x.d <= 7)
@@ -1495,6 +1498,10 @@
       },
       camps() {
         S.rev; return D.campaigns.filter(c => !c.archived).slice(0, 5).map(c => ({ c, f: funnel(ix().itemsByCampaign.get(c.id) || []) }));
+      },
+      pubFeed() {
+        S.rev; return this.pubs.map(p => { const c = ix().contactById.get(p.contact_id); return c && !c.deleted_at ? { p, c, o: ix().outletById.get(c.outlet_id) } : null; })
+          .filter(x => x && (!this.pubsPool || D.favorites.has(x.c.id))).slice(0, 12);
       },
       hello() { const h = new Date().getHours(); return h < 6 ? 'Доброй ночи' : h < 12 ? 'Доброе утро' : h < 18 ? 'Добрый день' : 'Добрый вечер'; },
     },
@@ -1523,6 +1530,15 @@
         <span class="status" :class="x.it.status">{{ statusLabel(x.it.status) }}</span>
       </div>
       <div v-if="!waiting.length" class="muted small">Висящих питчей нет. Отличная работа.</div>
+    </div>
+    <div v-if="s.stage4" class="card">
+      <div class="row" style="margin-bottom:8px"><h2 class="h2 grow" style="margin:0"><Ic n="globe"/> Свежие материалы журналистов</h2>
+        <label class="small row" style="gap:6px; cursor:pointer"><input type="checkbox" v-model="pubsPool"> только мой пул</label></div>
+      <div v-for="x in pubFeed" :key="x.p.id" class="note">
+        <a :href="x.p.url" target="_blank" rel="noopener" style="font-weight:500">{{ x.p.title || x.p.url }}</a>
+        <div class="meta"><a href="#" @click.prevent="openContact(x.c.id)">{{ x.c.name }}</a>{{ x.o ? ' · ' + x.o.name : '' }} · {{ fmtShort(x.p.published_at) }}</div>
+      </div>
+      <div v-if="!pubFeed.length" class="muted small">{{ pubsPool ? 'У журналистов из вашего пула свежих материалов не нашлось.' : 'Пока пусто: поиск идёт по четвергам.' }}</div>
     </div>
     <div class="card">
       <h2 class="h2">Свежие заметки коллег</h2>

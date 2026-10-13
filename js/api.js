@@ -175,6 +175,7 @@
       async outletStats(outletId) { return must(await sb.from('outlet_stats').select('*').eq('outlet_id', outletId).order('at', { ascending: false }).limit(30)); },
       async contactPubs(cid) { return must(await sb.from('contact_pubs').select('*').eq('contact_id', cid).eq('hidden', false).order('published_at', { ascending: false }).limit(10)); },
       async hidePub(id) { must(await sb.from('contact_pubs').update({ hidden: true }).eq('id', id)); },
+      async recentPubs(n) { return must(await sb.from('contact_pubs').select('*').eq('hidden', false).not('published_at', 'is', null).order('published_at', { ascending: false }).limit(n || 60)); },
       async settings() { return Object.fromEntries(must(await sb.from('app_settings').select('*')).map(s => [s.key, s.value])); },
     };
   }
@@ -382,6 +383,7 @@
       async outletStats(outletId) { return clone(db.outlet_stats.filter(s => s.outlet_id === outletId).reverse()); },
       async contactPubs(cid) { return clone(db.contact_pubs.filter(p => p.contact_id === cid && !p.hidden)); },
       async hidePub(id) { const p = db.contact_pubs.find(x => x.id === id); if (p) p.hidden = true; },
+      async recentPubs(n) { return clone(db.contact_pubs.filter(p => !p.hidden && p.published_at).sort((a, b) => b.published_at.localeCompare(a.published_at)).slice(0, n || 60)); },
       async settings() { return clone(db.settings); },
     };
   }
