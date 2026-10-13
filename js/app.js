@@ -22,10 +22,10 @@
 
   // ====================== хранилище ======================
   const S = reactive({
-    mode: api.mode, booting: true, user: null, me: null, loadingPct: 0, loadError: '',
+    mode: api.mode, booting: true, tick: Date.now(), stage2: false, clientId: null, listId: null, user: null, me: null, loadingPct: 0, loadError: '',
     view: 'map', campaignId: null, drawer: null, modal: null, toast: '', rev: 0,
   });
-  const D = { outlets: [], contacts: [], campaigns: [], items: [], profiles: [], favorites: new Set(), dict: { topic: [], tag: [] }, settings: { collision_days: 7 }, moves: [], ignores: [] };
+  const D = { outlets: [], contacts: [], campaigns: [], items: [], profiles: [], favorites: new Set(), dict: { topic: [], tag: [] }, settings: { collision_days: 7 }, moves: [], ignores: [], clients: [], lists: [], members: [], sends: [], notifs: [], tasks: [] };
   let IX = {};
   const bump = () => { S.rev++; };
 
@@ -69,7 +69,12 @@
       if (m.from_outlet_id) { if (!movedFromOutlet.has(m.from_outlet_id)) movedFromOutlet.set(m.from_outlet_id, []); movedFromOutlet.get(m.from_outlet_id).push(m); }
     }
     for (const [, arr] of movesByContact) arr.sort((a, b) => a.moved_at.localeCompare(b.moved_at));
-    IX = { outletById, contactById, byOutlet, orphan, itemsByContact, itemsByCampaign, lastPitch, lastPitchOutlet, profileById, movesByContact, movedFromOutlet };
+    const clientById = new Map(D.clients.map(c => [c.id, c]));
+    const membersByList = new Map();
+    for (const m of D.members) { if (!membersByList.has(m.list_id)) membersByList.set(m.list_id, []); membersByList.get(m.list_id).push(m.contact_id); }
+    const sendsByContact = new Map();
+    for (const s of D.sends) for (const cid of s.contact_ids || []) { if (!sendsByContact.has(cid)) sendsByContact.set(cid, []); sendsByContact.get(cid).push(s); }
+    IX = { outletById, contactById, byOutlet, orphan, itemsByContact, itemsByCampaign, lastPitch, lastPitchOutlet, profileById, movesByContact, movedFromOutlet, clientById, membersByList, sendsByContact };
   }
   const ix = () => (S.rev, IX);
 
@@ -106,9 +111,23 @@
   const isAdmin = () => S.me && S.me.role === 'admin';
   function collisions(contactId, exceptItemId) {
     const days = +(D.settings.collision_days || 7);
-    return (ix().itemsByContact.get(contactId) || [])
+    const a = (ix().itemsByContact.get(contactId) || [])
       .filter(it => it.id !== exceptItemId && it.sent_at && it.status !== 'not_sent' && daysAgo(it.sent_at) <= days)
       .map(it => ({ it, camp: D.campaigns.find(c => c.id === it.campaign_id), who: pname(it.owner), ago: agoText(it.sent_at) }));
+    const b = (ix().sendsByContact.get(contactId) || []).filter(s => daysAgo(s.sent_at) <= days && !s.campaign_id)
+      .map(s => ({ it: { id: 's' + s.id, owner: s.sent_by, status: 'sent', campaign_id: null }, camp: { title: 'рассылка «' + (s.list_name || '') + '»' }, who: pname(s.sent_by), ago: agoText(s.sent_at) }));
+    return a.concat(b);
+  }
+  function followText(at) {
+    const d = new Date(at), now = new Date();
+    const hm = pad(d.getHours()) + ':' + pad(d.getMinutes());
+    if (d.toDateString() === now.toDateString()) return 'сегодня в ' + hm;
+    const tm = new Date(now.getTime() + 864e5);
+    if (d.toDateString() === tm.toDateString()) return 'завтра в ' + hm;
+    return fmtShort(d) + ' в ' + hm;
+  }
+  function askNotifyPermission() {
+    try { if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission(); } catch (e) {}
   }
   function birthdayText(c) {
     if (!c.birthday_day || !c.birthday_month) return '';
@@ -166,11 +185,14 @@
       D.dict = { topic: r.dictionaries.filter(d => d.kind === 'topic').map(d => d.value), tag: r.dictionaries.filter(d => d.kind === 'tag').map(d => d.value) };
       D.settings = Object.assign({ collision_days: 7 }, r.settings);
       D.moves = markRaw(r.moves || []); D.ignores = markRaw(r.ignores || []);
+      S.stage2 = !!r.stage2;
+      D.clients = markRaw(r.clients || []); D.lists = markRaw(r.lists || []); D.members = markRaw(r.members || []);
+      D.sends = markRaw(r.sends || []); D.notifs = markRaw(r.notifs || []); D.tasks = markRaw(r.tasks || []);
       { const cids = new Set(D.contacts.map(c => c.id)), kids = new Set(D.campaigns.map(c => c.id)); D.items = markRaw(D.items.filter(i => cids.has(i.contact_id) && kids.has(i.campaign_id))); }
       S.me = r.me; applyTheme(S.me.theme);
       rebuildIndex(); bump();
       if (S.view === 'map' && !D.contacts.length && isAdmin()) S.view = 'admin';
-      S.needsUpdate = !!r.needsUpdate;
+      S.needsUpdate = r.needsUpdate || '';
       if (isAdmin() && !r.needsUpdate) api.purgeTrash().catch(() => {});
     } catch (e) { console.error(e); S.loadError = e.message || String(e); }
   }
@@ -208,6 +230,13 @@
       for (const r of res) D.items.push(r);
       rebuildIndex(); bump();
       return { added: res.length, skipped: contactIds.length - res.length };
+    },
+    async addToList(listId, ids) {
+      const have = new Set(ix().membersByList.get(listId) || []);
+      const rows = ids.filter(id => !have.has(id)).map(id => ({ list_id: listId, contact_id: id }));
+      const res = await api.insertMany('mailing_members', rows, 'list_id,contact_id');
+      D.members = markRaw(D.members.concat(res.length ? res : rows)); rebuildIndex(); bump();
+      return { added: rows.length };
     },
     async refreshRows(list, table, ids) {
       const rows = await api.rowsByIds(table, ids);
@@ -299,15 +328,24 @@
     mixins: [helpers], components: { Ic },
     computed: {
       s: () => S, me: () => S.me,
-      counts() { S.rev; return { outlets: D.outlets.length, pool: D.favorites.size, camps: D.campaigns.filter(c => !c.archived).length }; },
+      counts() {
+        S.rev; const mine = D.tasks.filter(t => S.me && t.user_id === S.me.id);
+        return { outlets: D.outlets.length, pool: D.favorites.size, camps: D.campaigns.filter(c => !c.archived).length, clients: D.clients.filter(c => !c.archived).length, lists: D.lists.length,
+          verify: mine.length ? mine.filter(t => !t.result).length || '✓' : '' };
+      },
     },
     template: `
 <nav class="nav" aria-label="Разделы">
-  <div class="brand"><div class="brand-mark">М</div>Медиакарта</div>
+  <div class="brand"><div class="brand-mark">М</div><span class="grow">Медиакарта</span><Bell v-if="s.stage2" /></div>
   <a :class="{active: s.view==='dash'}" @click="go('dash')">Сводка</a>
   <a :class="{active: s.view==='map'}" @click="go('map')">Медиакарта <span class="count">{{ counts.outlets.toLocaleString('ru') }}</span></a>
   <a :class="{active: s.view==='campaigns' || s.view==='campaign'}" @click="go('campaigns')">Инфоповоды <span class="count">{{ counts.camps }}</span></a>
   <a :class="{active: s.view==='pool'}" @click="go('pool')">Мой пул <span class="count">{{ counts.pool }}</span></a>
+  <template v-if="s.stage2">
+    <a :class="{active: s.view==='clients' || s.view==='client'}" @click="go('clients')">Клиенты <span class="count">{{ counts.clients }}</span></a>
+    <a :class="{active: s.view==='mailings' || s.view==='mailing'}" @click="go('mailings')">Рассылки <span class="count">{{ counts.lists }}</span></a>
+    <a :class="{active: s.view==='verify'}" @click="go('verify')">Актуализация <span class="count">{{ counts.verify }}</span></a>
+  </template>
   <a :class="{active: s.view==='settings'}" @click="go('settings')">Настройки</a>
   <template v-if="isAdmin()">
     <div class="group label">Администратор</div>
@@ -349,6 +387,7 @@
       },
       typeCounts() { S.rev; const c = { '': D.outlets.length }; for (const o of D.outlets) c[o.type] = (c[o.type] || 0) + 1; return c; },
       contactFilterOn() { return !!(this.relation || this.pool || this.stale || this.verified); },
+      hasInactive() { S.rev; return D.contacts.some(c => c.inactive); },
       result() {
         const X = ix();
         const q = norm(this.qd.trim()); const words = q ? q.split(/\s+/) : [];
@@ -364,6 +403,7 @@
           }
           if (this.verified === 'fresh' && !(c.verified_at && (now - new Date(c.verified_at)) / 864e5 <= 365)) return false;
           if (this.verified === 'old' && c.verified_at && (now - new Date(c.verified_at)) / 864e5 <= 365) return false;
+          if (this.verified === 'inactive' ? !c.inactive : (c.inactive && !words.length)) return false;
           return true;
         };
         const out = [];
@@ -404,7 +444,7 @@
         if (this.tier) c.push({ k: 'tier', l: 'Tier ' + this.tier });
         if (this.relation) c.push({ k: 'relation', l: L[this.relation] });
         if (this.stale) c.push({ k: 'stale', l: St[this.stale] });
-        if (this.verified) c.push({ k: 'verified', l: this.verified === 'fresh' ? 'Проверены за год' : 'Не проверены' });
+        if (this.verified) c.push({ k: 'verified', l: { fresh: 'Проверены за год', old: 'Не проверены', inactive: 'Помечены «не работает»' }[this.verified] });
         if (this.pool) c.push({ k: 'pool', l: 'Мой пул' });
         return c;
       },
@@ -427,6 +467,7 @@
       clearSel() { this.selected = new Set(); this.selRev++; },
       clearChip(k) { if (k === 'q') { this.q = ''; this.qd = ''; } else this[k] = k === 'pool' ? false : ''; },
       bulk() { S.modal = { kind: 'bulk', ids: [...this.selected], done: () => this.clearSel() }; },
+      toList() { S.modal = { kind: 'addToList', ids: [...this.selected], done: () => this.clearSel() }; },
       reset() { Object.assign(this, { q: '', qd: '', type: '', topic: '', geo: '', tier: '', relation: '', pool: false, stale: '', verified: '' }); },
       toCampaign() { S.modal = { kind: 'addToCampaign', ids: [...this.selected], done: () => this.clearSel() }; },
       copyEmails() {
@@ -464,7 +505,7 @@
     <select class="fselect" :class="{set: tier}" v-model="tier" aria-label="Tier"><option value="">Tier</option><option value="1">Tier 1</option><option value="2">Tier 2</option><option value="3">Tier 3</option></select>
     <select class="fselect" :class="{set: relation}" v-model="relation" aria-label="Отношение"><option value="">Отношение</option><option value="warm">Тёплые</option><option value="neutral">Нейтральные</option><option value="cold">Негатив</option></select>
     <select class="fselect" :class="{set: stale}" v-model="stale" aria-label="Последний контакт"><option value="">Последний питч</option><option value="30">Не трогали 30+ дней</option><option value="60">Не трогали 60+ дней</option><option value="90">Не трогали 90+ дней</option><option value="never">Ещё не питчили</option></select>
-    <select class="fselect" :class="{set: verified}" v-model="verified" aria-label="Актуальность"><option value="">Актуальность</option><option value="fresh">Проверены за год</option><option value="old">Не проверены</option></select>
+    <select class="fselect" :class="{set: verified}" v-model="verified" aria-label="Актуальность"><option value="">Актуальность</option><option value="fresh">Проверены за год</option><option value="old">Не проверены</option><option value="inactive">Помечены «не работает»</option></select>
     <label class="toggle"><input type="checkbox" v-model="pool"> Мой пул</label>
     <select class="fselect" v-model="sort" aria-label="Сортировка"><option value="tier">Сначала Tier 1</option><option value="people">Больше контактов</option><option value="recent">Недавно питчили</option><option value="name">По алфавиту</option></select>
   </div>
@@ -523,6 +564,7 @@
     <b>Выбрано: {{ selCount }}</b>
     <span class="grow"></span>
     <button class="btn primary" @click="toCampaign"><Ic n="send"/> В инфоповод</button>
+    <button v-if="s.stage2" class="btn" @click="toList"><Ic n="plus"/> В рассылку</button>
     <button class="btn" @click="bulk"><Ic n="edit"/> Изменить разом</button>
     <button class="btn" @click="copyEmails"><Ic n="copy"/> Скопировать почты</button>
     <button class="btn" @click="exportSel"><Ic n="down"/> Excel</button>
@@ -537,7 +579,7 @@
   const ContactDrawer = {
     mixins: [helpers], components: { Ic },
     props: { id: Number },
-    data: () => ({ notes: [], noteText: '', editComment: false, commentDraft: '', audit: null, showAudit: false, busy: false }),
+    data: () => ({ notes: [], noteText: '', editComment: false, commentDraft: '', audit: null, showAudit: false, busy: false, mq: null }),
     computed: {
       c() { S.rev; return ix().contactById.get(this.id); },
       o() { return this.c && ix().outletById.get(this.c.outlet_id); },
@@ -548,6 +590,8 @@
       },
       tagOptions() { S.rev; return D.dict.tag; },
       career() { S.rev; return ix().movesByContact.get(this.id) || []; },
+      mailings() { S.rev; return (ix().sendsByContact.get(this.id) || []).slice().sort((a, b) => b.sent_at.localeCompare(a.sent_at)); },
+      stage2: () => S.stage2,
     },
     watch: { id: { immediate: true, handler() { this.load(); } } },
     methods: {
@@ -570,9 +614,40 @@
       async addNote() {
         const body = this.noteText.trim(); if (!body) return;
         this.busy = true;
-        try { const n = await safe(() => api.insert('notes', { contact_id: this.c.id, body, author: S.me.id })); this.notes.unshift(n); this.noteText = ''; }
-        finally { this.busy = false; }
+        try {
+          const n = await safe(() => api.insert('notes', { contact_id: this.c.id, body, author: S.me.id }));
+          this.notes.unshift(n); this.noteText = ''; this.mq = null;
+          if (S.stage2) {
+            const low = body.toLowerCase();
+            const who = D.profiles.filter(p => p.id !== S.me.id && p.full_name && low.includes('@' + p.full_name.toLowerCase()));
+            for (const p of who) await api.insert('notifications', { user_id: p.id, kind: 'mention', contact_id: this.c.id, note_id: n.id, text: body.slice(0, 300), created_by: S.me.id }).catch(e => console.error(e));
+            if (who.length) toast('Уведомили: ' + who.map(p => p.full_name).join(', '));
+          }
+        } finally { this.busy = false; }
       },
+      onNoteInput(e) {
+        const v = e.target.value, pos = e.target.selectionStart;
+        const m = v.slice(0, pos).match(/@([^@\n]{0,20})$/);
+        this.mq = m ? m[1].toLowerCase() : null;
+      },
+      mentionList() {
+        if (this.mq === null || !S.stage2) return [];
+        return D.profiles.filter(p => p.id !== S.me.id && (p.full_name || '').toLowerCase().startsWith(this.mq)).slice(0, 6);
+      },
+      pickMention(p) {
+        const ta = this.$refs.noteTa; const pos = ta.selectionStart; const v = this.noteText;
+        const start = v.slice(0, pos).lastIndexOf('@');
+        this.noteText = v.slice(0, start) + '@' + p.full_name + ' ' + v.slice(pos);
+        this.mq = null; this.$nextTick(() => ta.focus());
+      },
+      noteParts(body) {
+        const names = D.profiles.map(p => p.full_name).filter(Boolean).sort((a, b) => b.length - a.length);
+        if (!names.length) return [{ t: body }];
+        const re = new RegExp('(' + names.map(n => '@' + n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')', 'gi');
+        return body.split(re).filter(Boolean).map(t => ({ t, m: /^@/.test(t) && names.some(n => ('@' + n).toLowerCase() === t.toLowerCase()) }));
+      },
+      async toggleUnsub() { await safe(() => actions.saveContact(this.c.id, { unsubscribed: !this.c.unsubscribed }), this.c.unsubscribed ? 'Снова получает рассылки' : 'Больше не попадёт в рассылки'); },
+      async toggleInactive() { await safe(() => actions.saveContact(this.c.id, { inactive: !this.c.inactive }), this.c.inactive ? 'Контакт снова активен' : 'Помечен «не работает» и скрыт из медиакарты'); },
       async delNote(n) {
         if (!confirm('Удалить заметку?')) return;
         await safe(() => api.remove('notes', n.id)); this.notes = this.notes.filter(x => x.id !== n.id);
@@ -616,6 +691,7 @@
   <div v-if="career.length" class="small"><span class="label">Карьера:&nbsp;</span>
     <template v-for="m in career" :key="m.id"> {{ m.from_name || 'без издания' }}<template v-if="m.from_role"> ({{ m.from_role }})</template> → </template>
     <b>{{ o ? o.name : 'без издания' }}</b> <span class="muted">· с {{ fmtDate(career[career.length-1].moved_at) }}</span></div>
+  <div v-if="c.inactive" class="banner">Помечен как «больше не работает» и скрыт из медиакарты. <a href="#" @click.prevent="toggleInactive">Вернуть в активные</a></div>
   <div v-for="x in coll" :key="x.it.id" class="banner"><Ic n="alert" :s="14"/> {{ x.who }} {{ x.it.owner===s.me.id ? '(вы)' : '' }} писал(а) {{ x.ago }} по инфоповоду «{{ x.camp ? x.camp.title : '—' }}». Статус: {{ statusLabel(x.it.status).toLowerCase() }}.</div>
 
   <div class="kv">
@@ -629,9 +705,12 @@
       <span class="v"><span class="seg"><button v-for="r in ['warm','neutral','cold']" :key="r" :class="{on: c.relation===r}" @click="setRel(r)"><span class="rel" :class="r">{{ relLabel(r) }}</span></button></span></span></template>
     <span class="k">Публикация</span>
     <span class="v"><template v-if="c.last_pub_url"><a :href="safeUrl(c.last_pub_url)" target="_blank" rel="noopener">{{ c.last_pub_date ? fmtDate(c.last_pub_date) : 'ссылка' }} ↗</a></template><span v-else class="muted">не указана · <a href="#" @click.prevent="edit">добавить</a></span></span>
+    <template v-if="stage2 && !c.is_desk"><span class="k">Рассылки</span>
+      <span class="v"><template v-if="mailings.length">получил {{ mailings.length }}, последняя {{ fmtDate(mailings[0].sent_at) }} · </template>
+        <a href="#" @click.prevent="toggleUnsub">{{ c.unsubscribed ? 'отписался — вернуть' : 'отписать' }}</a></span></template>
     <span class="k">Проверен</span>
     <span class="v"><template v-if="c.verified_at">{{ fmtDate(c.verified_at) }} · {{ pname(c.verified_by) }}</template><template v-else-if="c.verified_note">{{ c.verified_note }} <span class="muted small">(из старой базы)</span></template><span v-else class="muted">ещё нет</span>
-      · <a href="#" @click.prevent="verify">подтверждаю, актуален</a></span>
+      · <a href="#" @click.prevent="verify">подтверждаю, актуален</a><template v-if="stage2 && !c.is_desk && !c.inactive"> · <a href="#" @click.prevent="toggleInactive">не работает</a></template></span>
   </div>
 
   <div v-if="!c.is_desk">
@@ -653,13 +732,16 @@
   <section>
     <h3 class="section-title">Заметки</h3>
     <div class="row" style="align-items:flex-end; margin-bottom:6px">
-      <textarea class="textarea grow" style="min-height:44px" rows="2" v-model="noteText" placeholder="Например: созвонились, ждёт данные к пятнице" @keydown.ctrl.enter="addNote" @keydown.meta.enter="addNote"></textarea>
+      <textarea ref="noteTa" class="textarea grow" style="min-height:44px" rows="2" v-model="noteText" :placeholder="stage2 ? 'Например: созвонились, ждёт данные к пятнице. @Имя — упомянуть коллегу' : 'Например: созвонились, ждёт данные к пятнице'" @input="onNoteInput" @keydown.ctrl.enter="addNote" @keydown.meta.enter="addNote"></textarea>
       <button class="btn primary sm" :disabled="busy || !noteText.trim()" @click="addNote">Добавить</button>
+    </div>
+    <div v-if="mentionList().length" class="card" style="padding:6px; margin-bottom:6px">
+      <button v-for="p in mentionList()" :key="p.id" class="btn ghost sm" @mousedown.prevent="pickMention(p)">@{{ p.full_name }}</button>
     </div>
     <div v-for="n in notes" :key="n.id" class="note">
       <div class="row"><b>{{ pname(n.author) }}</b><span class="meta">{{ fmtDate(n.created_at) }}</span><span class="grow"></span>
         <button v-if="canDelNote(n)" class="icon-btn" style="width:24px;height:24px" aria-label="Удалить заметку" @click="delNote(n)"><Ic n="trash" :s="13"/></button></div>
-      <div style="white-space:pre-line">{{ n.body }}</div>
+      <div style="white-space:pre-line"><template v-for="(p,i) in noteParts(n.body)" :key="i"><b v-if="p.m" style="color:var(--accent-text)">{{ p.t }}</b><template v-else>{{ p.t }}</template></template></div>
     </div>
     <div v-if="!notes.length" class="muted small">Заметок нет.</div>
   </section>
@@ -913,7 +995,8 @@
     props: { m: Object },
     data() {
       const c = this.m.id ? D.campaigns.find(x => x.id === this.m.id) : null;
-      return { f: { title: c ? c.title : '', client: c ? c.client || '' : '', pitch_date: c ? c.pitch_date || '' : new Date().toISOString().slice(0, 10),
+      const cl = c && c.client_id ? D.clients.find(x => x.id === c.client_id) : null;
+      return { clients: D.clients.map(x => x.name), f: { title: c ? c.title : '', client: cl ? cl.name : (c ? c.client || '' : (this.m.clientName || '')), pitch_date: c ? c.pitch_date || '' : new Date().toISOString().slice(0, 10),
         description: c ? c.description || '' : '', materials_url: c ? c.materials_url || '' : '' }, err: '', busy: false };
     },
     methods: {
@@ -922,8 +1005,14 @@
         if (!this.f.title.trim()) { this.err = 'Назовите инфоповод'; return; }
         this.busy = true;
         try {
-          const row = await actions.saveCampaign(this.m.id, { title: this.f.title.trim(), client: this.f.client.trim() || null, pitch_date: this.f.pitch_date || null,
-            description: this.f.description.trim() || null, materials_url: this.f.materials_url.trim() || null });
+          const clientName = this.f.client.trim(); let client_id;
+          if (S.stage2) {
+            let cl = clientName ? D.clients.find(x => norm(x.name) === norm(clientName)) : null;
+            if (clientName && !cl) { cl = await api.insert('clients', { name: clientName }); D.clients.push(cl); rebuildIndex(); bump(); }
+            client_id = cl ? cl.id : null;
+          }
+          const row = await actions.saveCampaign(this.m.id, Object.assign(S.stage2 ? { client_id } : {}, { title: this.f.title.trim(), client: clientName || null, pitch_date: this.f.pitch_date || null,
+            description: this.f.description.trim() || null, materials_url: this.f.materials_url.trim() || null }));
           S.modal = null; go('campaign', { campaignId: row.id }); toast(this.m.id ? 'Сохранено' : 'Инфоповод создан');
           if (this.m.thenAdd) { await actions.addToCampaign(row.id, this.m.thenAdd); toast('Инфоповод создан, контакты добавлены'); }
         } catch (e) { this.err = e.message; } finally { this.busy = false; }
@@ -934,7 +1023,8 @@
   <h3>{{ m.id ? 'Инфоповод' : 'Новый инфоповод' }}</h3>
   <label class="field"><span>Название *</span><input class="input" v-model="f.title" required placeholder="Например: исследование рынка BNPL"></label>
   <div class="grid2">
-    <label class="field"><span>Клиент</span><input class="input" v-model="f.client"></label>
+    <label class="field"><span>Клиент</span><input class="input" v-model="f.client" list="mk-clients" placeholder="Выберите или впишите нового"></label>
+    <datalist id="mk-clients"><option v-for="n in clients" :key="n" :value="n"></option></datalist>
     <label class="field"><span>Дата рассылки</span><input class="input" type="date" v-model="f.pitch_date"></label>
   </div>
   <label class="field"><span>Суть / текст питча</span><textarea class="textarea" rows="5" v-model="f.description"></textarea></label>
@@ -982,7 +1072,7 @@
     data: () => ({ q: '', type: '', topic: '', tier: '', relation: '', pool: false, sel: new Set(), rev: 0, busy: false, deskToo: false }),
     computed: {
       topics() { S.rev; return D.dict.topic; },
-      inCamp() { S.rev; return new Set((ix().itemsByCampaign.get(this.m.campaignId) || []).map(i => i.contact_id)); },
+      inCamp() { S.rev; return new Set(this.m.listId ? (ix().membersByList.get(this.m.listId) || []) : (ix().itemsByCampaign.get(this.m.campaignId) || []).map(i => i.contact_id)); },
       list() {
         S.rev; const X = ix(); const ws = norm(this.q.trim()).split(/\s+/).filter(Boolean);
         const out = [];
@@ -1009,7 +1099,10 @@
       close() { S.modal = null; },
       async add() {
         this.busy = true;
-        try { const r = await actions.addToCampaign(this.m.campaignId, [...this.sel]); toast('Добавлено: ' + r.added); S.modal = null; }
+        try {
+          const r = this.m.listId ? await actions.addToList(this.m.listId, [...this.sel]) : await actions.addToCampaign(this.m.campaignId, [...this.sel]);
+          toast('Добавлено: ' + r.added); S.modal = null;
+        }
         catch (e) { toast('Ошибка: ' + e.message); } finally { this.busy = false; }
       },
     },
@@ -1039,7 +1132,7 @@
     <div v-if="!list.length" class="empty">Никого не нашли</div>
     <div v-if="list.length >= 300" class="small muted" style="padding:8px">Показаны первые 300. Уточните поиск.</div>
   </div>
-  <div class="foot"><span class="muted" style="margin-right:auto">Выбрано: {{ selCount }}</span><button class="btn ghost" @click="close">Отмена</button><button class="btn primary" :disabled="!selCount || busy" @click="add">Добавить в медиалист</button></div>
+  <div class="foot"><span class="muted" style="margin-right:auto">Выбрано: {{ selCount }}</span><button class="btn ghost" @click="close">Отмена</button><button class="btn primary" :disabled="!selCount || busy" @click="add">{{ m.listId ? 'Добавить в рассылку' : 'Добавить в медиалист' }}</button></div>
 </div></div>`,
   };
 
@@ -1053,10 +1146,12 @@
   }
   const CampaignsView = {
     mixins: [helpers], components: { Ic },
-    data: () => ({ archived: false }),
+    data: () => ({ archived: false, client: '' }),
     computed: {
+      clients() { S.rev; return D.clients; },
+      stage2: () => S.stage2,
       list() {
-        S.rev; return D.campaigns.filter(c => !!c.archived === this.archived).sort((a, b) => (b.pitch_date || b.created_at || '').localeCompare(a.pitch_date || a.created_at || ''))
+        S.rev; return D.campaigns.filter(c => !!c.archived === this.archived && (!this.client || String(c.client_id) === this.client)).sort((a, b) => (b.pitch_date || b.created_at || '').localeCompare(a.pitch_date || a.created_at || ''))
           .map(c => ({ c, f: funnel(ix().itemsByCampaign.get(c.id) || []) }));
       },
     },
@@ -1065,7 +1160,8 @@
 <div>
   <div class="page-head"><div><h1>Инфоповоды</h1><div class="muted small" style="margin-top:6px">Каждый инфоповод — это медиалист и статус питчинга по каждому журналисту</div></div>
     <button class="btn primary" @click="create"><Ic n="plus"/> Инфоповод</button></div>
-  <div class="seg" style="margin-bottom:14px"><button :class="{on: !archived}" @click="archived=false">Активные</button><button :class="{on: archived}" @click="archived=true">Архив</button></div>
+  <div class="row wrap" style="margin-bottom:14px"><div class="seg"><button :class="{on: !archived}" @click="archived=false">Активные</button><button :class="{on: archived}" @click="archived=true">Архив</button></div>
+    <select v-if="stage2" class="fselect" :class="{set: client}" v-model="client" aria-label="Клиент"><option value="">Все клиенты</option><option v-for="c in clients" :key="c.id" :value="String(c.id)">{{ c.name }}</option></select></div>
   <div v-if="!list.length" class="empty">{{ archived ? 'В архиве пусто' : 'Создайте первый инфоповод и соберите под него медиалист' }}</div>
   <div class="stack">
     <div v-for="x in list" :key="x.c.id" class="card row wrap" style="cursor:pointer; gap:18px" @click="open(x.c.id)">
@@ -1099,6 +1195,7 @@
       },
       f() { S.rev; return funnel(ix().itemsByCampaign.get(S.campaignId) || []); },
       profiles() { S.rev; return D.profiles; },
+      stage2: () => S.stage2,
       statuses: () => STATUS, channels: () => CHANNEL,
     },
     methods: {
@@ -1106,6 +1203,7 @@
         const patch = { [key]: val || null };
         if (key === 'status' && val !== 'not_sent' && !r.it.sent_at) patch.sent_at = new Date().toISOString();
         if (key === 'status' && val === 'not_sent') patch.sent_at = null;
+        if (S.stage2 && key === 'status' && !['sent', 'no_reply'].includes(val) && r.it.followup_at) patch.followup_at = null;
         if (key === 'sent_at') patch.sent_at = val ? new Date(val + 'T12:00:00').toISOString() : null;
         await safe(() => actions.saveItem(r.it.id, patch));
         if (key === 'status' && val === 'published' && !r.it.publication_url) toast('Добавьте ссылку на публикацию в строке');
@@ -1134,6 +1232,13 @@
         await exportXlsx('Медиалист — ' + this.camp.title.replace(/[\\/:*?"<>|]/g, '') + '.xlsx', [['Медиалист', rows]]);
       },
       dateVal(d) { return d ? new Date(d).toISOString().slice(0, 10) : ''; },
+      async setFollow(r, v) {
+        if (!v) return;
+        const at = v === 'off' ? null : new Date(Date.now() + (+v) * 3600e3).toISOString();
+        await safe(() => actions.saveItem(r.it.id, { followup_at: at }), at ? 'Напомню ' + followText(at) : 'Напоминание снято');
+        if (at) askNotifyPermission();
+      },
+      followText,
       collText(r) { return r.coll.map(x => x.who + ' — «' + (x.camp ? x.camp.title : '') + '», ' + x.ago).join('\n'); },
     },
     template: `
@@ -1173,7 +1278,7 @@
   </div>
   <div class="scroll-x card" style="padding:0">
     <table class="tbl" style="min-width:1080px">
-      <thead><tr><th>Журналист</th><th>Издание</th><th>Ведёт</th><th>Канал</th><th>Статус</th><th>Отправлено</th><th>Публикация / заметка</th><th></th></tr></thead>
+      <thead><tr><th>Журналист</th><th>Издание</th><th>Ведёт</th><th>Канал</th><th>Статус</th><th>Отправлено</th><th v-if="stage2">Напомнить</th><th>Публикация / заметка</th><th></th></tr></thead>
       <tbody>
         <tr v-for="r in items" :key="r.it.id">
           <td><a href="#" @click.prevent="openContact(r.c.id)"><b>{{ r.c.name }}</b></a>
@@ -1184,6 +1289,10 @@
           <td><select class="select" style="width:120px" :value="r.it.channel || ''" @change="upd(r, 'channel', $event.target.value)" aria-label="Канал"><option value="">—</option><option v-for="(l,k) in channels" :key="k" :value="k">{{ l }}</option></select></td>
           <td><select class="select" :class="'st-' + r.it.status" style="width:170px" :value="r.it.status" @change="upd(r, 'status', $event.target.value)" aria-label="Статус"><option v-for="(l,k) in statuses" :key="k" :value="k">{{ l }}</option></select></td>
           <td><input class="input" type="date" :value="dateVal(r.it.sent_at)" @change="upd(r, 'sent_at', $event.target.value)" aria-label="Дата отправки" style="width:140px"></td>
+          <td v-if="stage2"><select class="select" style="width:130px" :value="''" @change="setFollow(r, $event.target.value); $event.target.value=''" aria-label="Напомнить о фоллоу-апе">
+              <option value="">{{ r.it.followup_at ? '⏰ ' + followText(r.it.followup_at) : '—' }}</option>
+              <option value="1">через 1 час</option><option value="2">через 2 часа</option><option value="5">через 5 часов</option><option value="24">через 24 часа</option><option value="72">через 3 дня</option>
+              <option v-if="r.it.followup_at" value="off">убрать</option></select></td>
           <td><input v-if="r.it.status==='published'" class="input" :value="r.it.publication_url" placeholder="ссылка на публикацию" @change="upd(r, 'publication_url', $event.target.value.trim())" aria-label="Ссылка на публикацию">
               <input v-else class="input" :value="r.it.note" placeholder="заметка" @change="upd(r, 'note', $event.target.value.trim())" aria-label="Заметка"></td>
           <td><button class="icon-btn" aria-label="Убрать из медиалиста" @click="remove(r)"><Ic n="close"/></button></td>
@@ -1637,8 +1746,8 @@
     computed: {
       rows() {
         if (!this.data) return [];
-        const L = { outlets: 'Издание', contacts: 'Контакт', campaigns: 'Инфоповод' };
-        return ['contacts', 'outlets', 'campaigns'].flatMap(t => this.data[t].map(r => ({ t, label: L[t], r, name: r.name || r.title, left: 30 - daysAgo(r.deleted_at) })))
+        const L = { outlets: 'Издание', contacts: 'Контакт', campaigns: 'Инфоповод', clients: 'Клиент', mailing_lists: 'Рассылка' };
+        return ['contacts', 'outlets', 'campaigns', 'clients', 'mailing_lists'].flatMap(t => (this.data[t] || []).map(r => ({ t, label: L[t], r, name: r.name || r.title, left: 30 - daysAgo(r.deleted_at) })))
           .sort((a, b) => b.r.deleted_at.localeCompare(a.r.deleted_at));
       },
     },
@@ -1675,10 +1784,497 @@
 </div>`,
   };
 
+  // ====================== 2.0 · УВЕДОМЛЕНИЯ (колокольчик) ======================
+  function dueFollowups() {
+    S.tick; S.rev;
+    const now = Date.now();
+    return D.items.filter(i => i.owner === (S.me && S.me.id) && i.followup_at && ['sent', 'no_reply'].includes(i.status))
+      .map(i => ({ i, due: new Date(i.followup_at).getTime() <= now }))
+      .sort((a, b) => a.i.followup_at.localeCompare(b.i.followup_at));
+  }
+  const Bell = {
+    mixins: [helpers], components: { Ic },
+    data: () => ({ open: false }),
+    computed: {
+      fol() { return dueFollowups(); },
+      due() { return this.fol.filter(x => x.due); },
+      soon() { return this.fol.filter(x => !x.due).slice(0, 8); },
+      ment() { S.rev; return D.notifs.filter(n => n.kind === 'mention').slice(0, 30); },
+      unread() { S.rev; return D.notifs.filter(n => !n.read_at).length; },
+      count() { return this.due.length + this.unread; },
+      perm() { S.tick; try { return 'Notification' in window ? Notification.permission : 'unsupported'; } catch (e) { return 'unsupported'; } },
+    },
+    methods: {
+      cname(id) { const c = ix().contactById.get(id); return c ? c.name : '—'; },
+      camp(id) { const c = D.campaigns.find(x => x.id === id); return c ? c.title : ''; },
+      async later(x, h) { await safe(() => actions.saveItem(x.i.id, { followup_at: h ? new Date(Date.now() + h * 3600e3).toISOString() : null }), h ? 'Напомню ' + followText(new Date(Date.now() + h * 3600e3)) : 'Готово'); },
+      async openMention(n) {
+        if (!n.read_at) { await api.markRead([n.id]).catch(() => {}); n.read_at = new Date().toISOString(); bump(); }
+        this.open = false; if (n.contact_id) openContact(n.contact_id);
+      },
+      async readAll() { const ids = D.notifs.filter(n => !n.read_at).map(n => n.id); await safe(() => api.markRead(ids)); D.notifs.forEach(n => { n.read_at = n.read_at || new Date().toISOString(); }); bump(); },
+      openC(id) { this.open = false; openContact(id); },
+      ask() { try { Notification.requestPermission().then(() => { S.tick = Date.now(); }); } catch (e) {} },
+    },
+    template: `
+<div style="position:relative">
+  <button class="icon-btn" :aria-label="'Уведомления: ' + count" @click="open = !open" style="position:relative">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M6 8a6 6 0 1 1 12 0c0 7 3 8 3 8H3s3-1 3-8"/><path d="M10 20a2 2 0 0 0 4 0"/></svg>
+    <span v-if="count" style="position:absolute; top:2px; right:2px; min-width:16px; height:16px; border-radius:8px; background:var(--accent); color:var(--accent-ink); font-size:10px; line-height:16px; text-align:center; padding:0 4px; font-weight:600">{{ count }}</span>
+  </button>
+  <div v-if="open" class="card" style="position:absolute; left:0; top:38px; width:360px; max-height:70vh; overflow-y:auto; z-index:40; box-shadow:var(--shadow); padding:14px">
+    <div class="row" style="margin-bottom:8px"><b class="grow">Уведомления</b><button class="icon-btn" aria-label="Закрыть" @click="open=false"><Ic n="close"/></button></div>
+    <div v-if="perm==='default'" class="banner info small" style="margin-bottom:8px">Включите уведомления браузера, чтобы напоминания всплывали, даже когда вкладка свёрнута. <a href="#" @click.prevent="ask">Включить</a></div>
+    <div class="section-title">Пора дожать</div>
+    <div v-for="x in due" :key="x.i.id" class="note">
+      <a href="#" @click.prevent="openC(x.i.contact_id)"><b>{{ cname(x.i.contact_id) }}</b></a>
+      <div class="meta">«{{ camp(x.i.campaign_id) }}» · отправлено {{ agoText(x.i.sent_at) }}</div>
+      <div class="row" style="margin-top:4px"><button class="btn sm" @click="later(x, 0)">Готово</button><button class="btn ghost sm" @click="later(x, 1)">+1 ч</button><button class="btn ghost sm" @click="later(x, 24)">Завтра</button></div>
+    </div>
+    <div v-if="!due.length" class="muted small" style="margin-bottom:6px">Сейчас дожимать некого.</div>
+    <template v-if="soon.length"><div class="section-title" style="margin-top:10px">Скоро</div>
+      <div v-for="x in soon" :key="x.i.id" class="note small"><a href="#" @click.prevent="openC(x.i.contact_id)">{{ cname(x.i.contact_id) }}</a> <span class="meta">⏰ {{ followText(x.i.followup_at) }}</span></div></template>
+    <div class="row" style="margin-top:12px"><div class="section-title grow" style="margin:0">Упоминания</div><a v-if="unread" href="#" class="small" @click.prevent="readAll">прочитать все</a></div>
+    <div v-for="n in ment" :key="n.id" class="note" style="cursor:pointer" @click="openMention(n)" :style="n.read_at ? 'opacity:.6' : ''">
+      <div><b>{{ pname(n.created_by) }}</b> упомянул(а) вас · {{ cname(n.contact_id) }} <span class="meta">{{ fmtShort(n.created_at) }}</span></div>
+      <div class="small" style="white-space:pre-line">{{ (n.text || '').slice(0, 160) }}</div>
+    </div>
+    <div v-if="!ment.length" class="muted small">Вас ещё не упоминали.</div>
+  </div>
+</div>`,
+  };
+  Bell.methods.followText = followText;
+  Nav.components.Bell = Bell;
+
+  // ====================== 2.0 · КЛИЕНТЫ ======================
+  function clientStats(clientId) {
+    const camps = D.campaigns.filter(c => c.client_id === clientId);
+    const ids = new Set(camps.map(c => c.id));
+    const items = D.items.filter(i => ids.has(i.campaign_id));
+    const f = funnel(items);
+    return { camps, items, f, pubs: items.filter(i => i.status === 'published'), lists: D.lists.filter(l => l.client_id === clientId) };
+  }
+  const ClientsView = {
+    mixins: [helpers], components: { Ic },
+    data: () => ({ q: '' }),
+    computed: {
+      list() {
+        S.rev; const q = norm(this.q);
+        return D.clients.filter(c => !q || norm(c.name).includes(q)).map(c => ({ c, s: clientStats(c.id) }))
+          .sort((a, b) => (a.c.archived - b.c.archived) || a.c.name.localeCompare(b.c.name, 'ru'));
+      },
+    },
+    methods: {
+      async create() {
+        const name = (prompt('Название клиента') || '').trim(); if (!name) return;
+        if (D.clients.some(c => norm(c.name) === norm(name))) { toast('Такой клиент уже есть'); return; }
+        const row = await safe(() => api.insert('clients', { name })); D.clients.push(row); rebuildIndex(); bump();
+        go('client', { clientId: row.id });
+      },
+    },
+    template: `
+<div>
+  <div class="page-head"><div><h1>Клиенты</h1><div class="muted small" style="margin-top:6px">Все инфоповоды, рассылки и публикации клиента в одном месте</div></div>
+    <button class="btn primary" @click="create"><Ic n="plus"/> Клиент</button></div>
+  <input class="input" style="max-width:320px; margin-bottom:14px" v-model="q" placeholder="Найти клиента" aria-label="Найти клиента">
+  <div v-if="!list.length" class="empty">Клиентов пока нет. Они появятся сами, когда вы укажете клиента в инфоповоде.</div>
+  <div class="card scroll-x" style="padding:0" v-else><table class="tbl" style="min-width:640px">
+    <thead><tr><th>Клиент</th><th>Инфоповоды</th><th>Питчей</th><th>Интерес</th><th>Публикации</th><th>Рассылки</th></tr></thead>
+    <tbody><tr v-for="x in list" :key="x.c.id" class="click" @click="go('client', {clientId: x.c.id})" :style="x.c.archived ? 'opacity:.55' : ''">
+      <td><b>{{ x.c.name }}</b><span v-if="x.c.archived" class="small muted"> · архив</span></td>
+      <td class="mono">{{ x.s.camps.length }}</td><td class="mono">{{ x.s.f.sentAll }}</td><td class="mono">{{ x.s.f.interest }}</td><td class="mono">{{ x.s.f.published }}</td><td class="mono">{{ x.s.lists.length }}</td>
+    </tr></tbody></table></div>
+</div>`,
+  };
+
+  const ClientView = {
+    mixins: [helpers], components: { Ic },
+    data: () => ({ editNote: false, note: '' }),
+    computed: {
+      c() { S.rev; return D.clients.find(x => x.id === S.clientId); },
+      s() { S.rev; return clientStats(S.clientId); },
+      camps() { return this.s.camps.slice().sort((a, b) => (b.pitch_date || b.created_at || '').localeCompare(a.pitch_date || a.created_at || '')).map(c => ({ c, f: funnel(ix().itemsByCampaign.get(c.id) || []) })); },
+      pubs() {
+        return this.s.pubs.map(i => ({ i, c: ix().contactById.get(i.contact_id), o: ix().outletById.get(i.outlet_id || (ix().contactById.get(i.contact_id) || {}).outlet_id), camp: D.campaigns.find(x => x.id === i.campaign_id) }))
+          .sort((a, b) => (b.i.updated_at || '').localeCompare(a.i.updated_at || ''));
+      },
+    },
+    methods: {
+      async rename() {
+        const name = (prompt('Название клиента', this.c.name) || '').trim(); if (!name || name === this.c.name) return;
+        const row = await safe(() => api.update('clients', this.c.id, { name }), 'Сохранено'); Object.assign(this.c, row);
+        for (const cp of this.s.camps) { cp.client = name; api.update('campaigns', cp.id, { client: name }).catch(() => {}); }
+        bump();
+      },
+      startNote() { this.note = this.c.note || ''; this.editNote = true; },
+      async saveNote() { const row = await safe(() => api.update('clients', this.c.id, { note: this.note.trim() || null }), 'Сохранено'); Object.assign(this.c, row); this.editNote = false; bump(); },
+      async archive() { const row = await safe(() => api.update('clients', this.c.id, { archived: !this.c.archived })); Object.assign(this.c, row); bump(); },
+      async del() {
+        if (!confirm('Убрать клиента «' + this.c.name + '» в корзину? Инфоповоды и рассылки останутся.')) return;
+        await safe(() => api.softDelete('clients', this.c.id), 'Клиент в корзине'); D.clients = markRaw(D.clients.filter(x => x.id !== this.c.id)); rebuildIndex(); bump(); go('clients');
+      },
+      newCamp() { S.modal = { kind: 'campaignForm', id: null, clientName: this.c.name }; },
+      newList() { S.modal = { kind: 'listForm', id: null, clientId: this.c.id }; },
+      meId: () => S.me.id,
+    },
+    template: `
+<div v-if="c">
+  <div class="page-head">
+    <div class="grow"><a href="#" class="small" @click.prevent="go('clients')">← Все клиенты</a><h1 style="margin-top:6px">{{ c.name }}</h1>
+      <div class="muted small" style="margin-top:6px">{{ s.camps.length }} инфоповодов · {{ s.f.sentAll }} питчей · {{ s.f.published }} публикаций<template v-if="c.archived"> · в архиве</template></div></div>
+    <div class="row wrap">
+      <button class="btn primary" @click="newCamp"><Ic n="plus"/> Инфоповод</button>
+      <button class="btn" @click="newList"><Ic n="plus"/> Рассылка</button>
+      <button class="btn" @click="rename"><Ic n="edit"/> Переименовать</button>
+      <button class="btn" @click="archive">{{ c.archived ? 'Из архива' : 'В архив' }}</button>
+      <button v-if="isAdmin() || c.created_by === meId()" class="btn ghost" style="color:var(--danger)" aria-label="В корзину" @click="del"><Ic n="trash"/></button>
+    </div>
+  </div>
+  <div class="funnel" style="margin-bottom:16px">
+    <div class="f"><b>{{ s.camps.length }}</b><span>инфоповодов</span></div>
+    <div class="f"><b>{{ s.f.sentAll }}</b><span>отправлено питчей</span></div>
+    <div class="f"><b>{{ s.f.interest }}</b><span>интерес</span></div>
+    <div class="f"><b>{{ s.f.published }}</b><span>публикаций</span></div>
+    <div class="f"><b>{{ s.f.sentAll ? Math.round(s.f.replied / s.f.sentAll * 100) : 0 }}%</b><span>ответили</span></div>
+  </div>
+  <div class="card stack" style="margin-bottom:16px">
+    <div class="row"><h2 class="h2 grow" style="margin:0">О клиенте</h2><a v-if="!editNote" href="#" class="small" @click.prevent="startNote">{{ c.note ? 'изменить' : 'добавить' }}</a></div>
+    <template v-if="editNote"><textarea class="textarea" v-model="note" placeholder="Контактные лица, особенности согласования, ключевые сообщения, кого не трогать"></textarea>
+      <div class="row"><button class="btn primary sm" @click="saveNote">Сохранить</button><button class="btn ghost sm" @click="editNote=false">Отмена</button></div></template>
+    <div v-else-if="c.note" style="white-space:pre-line">{{ c.note }}</div><div v-else class="muted small">Пока пусто.</div>
+  </div>
+  <div class="dash">
+    <div class="card"><h2 class="h2">Инфоповоды</h2>
+      <div v-for="x in camps" :key="x.c.id" class="note" style="cursor:pointer" @click="go('campaign', {campaignId: x.c.id})">
+        <div class="row"><b class="grow">{{ x.c.title }}</b><span class="small muted">{{ fmtDate(x.c.pitch_date || x.c.created_at) }}</span></div>
+        <div class="meta">{{ x.f.total }} в медиалисте · {{ x.f.sentAll }} отправлено · {{ x.f.interest }} интерес · {{ x.f.published }} вышло<template v-if="x.c.archived"> · архив</template></div>
+      </div>
+      <div v-if="!camps.length" class="muted small">Инфоповодов пока нет.</div>
+    </div>
+    <div class="card"><h2 class="h2">Публикации</h2>
+      <div v-for="x in pubs" :key="x.i.id" class="note">
+        <div><b>{{ x.o ? x.o.name : '—' }}</b> · {{ x.c ? x.c.name : '' }}</div>
+        <div class="meta">«{{ x.camp ? x.camp.title : '' }}»<template v-if="safeUrl(x.i.publication_url)"> · <a :href="safeUrl(x.i.publication_url)" target="_blank" rel="noopener">ссылка ↗</a></template></div>
+      </div>
+      <div v-if="!pubs.length" class="muted small">Публикаций пока нет.</div>
+    </div>
+    <div class="card"><h2 class="h2">Рассылки</h2>
+      <div v-for="l in s.lists" :key="l.id" class="note" style="cursor:pointer" @click="go('mailing', {listId: l.id})"><b>{{ l.name }}</b> <span class="meta">{{ l.kind === 'dynamic' ? 'живой список' : 'список' }}</span></div>
+      <div v-if="!s.lists.length" class="muted small">Рассылок пока нет.</div>
+    </div>
+  </div>
+</div>
+<div v-else class="empty">Клиент не найден. <a href="#" @click.prevent="go('clients')">К списку</a></div>`,
+  };
+
+  // ====================== 2.0 · РАССЫЛКИ ======================
+  const NO_MAIL_TAG = 'не любит рассылки';
+  function listMembers(l) {
+    const X = ix();
+    if (l.kind === 'dynamic') {
+      const f = l.filter || {};
+      return D.contacts.filter(c => {
+        if (c.is_desk && !f.desks) return false;
+        const o = X.outletById.get(c.outlet_id);
+        if (f.type && (!o || o.type !== f.type)) return false;
+        if (f.tier && (!o || String(o.tier) !== String(f.tier))) return false;
+        if (f.geo && (!o || !(o.geo || []).includes(f.geo))) return false;
+        if (f.relation && c.relation !== f.relation) return false;
+        if (f.topic && !((c.topics || []).includes(f.topic) || (o && (o.topics || []).includes(f.topic)))) return false;
+        if (f.tag && !(c.tags || []).includes(f.tag)) return false;
+        return true;
+      });
+    }
+    return (X.membersByList.get(l.id) || []).map(id => X.contactById.get(id)).filter(Boolean);
+  }
+  function recipients(l) {
+    const seen = new Set(), ok = [], excluded = [];
+    for (const c of listMembers(l)) {
+      const email = (c.emails || [])[0];
+      let why = '';
+      if (!email) why = 'нет почты';
+      else if (c.unsubscribed) why = 'отписался';
+      else if ((c.tags || []).includes(NO_MAIL_TAG)) why = 'не любит рассылки';
+      else if (c.relation === 'cold') why = 'негатив';
+      else if (c.inactive) why = 'не работает';
+      else if (seen.has(email.toLowerCase())) why = 'почта уже в списке';
+      if (why) excluded.push({ c, why }); else { seen.add(email.toLowerCase()); ok.push({ c, email }); }
+    }
+    return { ok, excluded };
+  }
+
+  const ListForm = {
+    mixins: [helpers], props: { m: Object },
+    data() {
+      const l = this.m.id ? D.lists.find(x => x.id === this.m.id) : null;
+      const cl = l ? D.clients.find(c => c.id === l.client_id) : D.clients.find(c => c.id === this.m.clientId);
+      return { name: l ? l.name : '', client: cl ? cl.name : '', kind: l ? l.kind : 'static', note: l ? l.note || '' : '', clients: D.clients.map(c => c.name), busy: false, err: '' };
+    },
+    methods: {
+      close() { S.modal = null; },
+      async save() {
+        if (!this.name.trim()) { this.err = 'Назовите список'; return; }
+        this.busy = true;
+        try {
+          let cl = this.client.trim() ? D.clients.find(c => norm(c.name) === norm(this.client.trim())) : null;
+          if (this.client.trim() && !cl) { cl = await api.insert('clients', { name: this.client.trim() }); D.clients.push(cl); }
+          const patch = { name: this.name.trim(), client_id: cl ? cl.id : null, kind: this.kind, note: this.note.trim() || null };
+          let row;
+          if (this.m.id) { row = await api.update('mailing_lists', this.m.id, patch); Object.assign(D.lists.find(x => x.id === row.id), row); }
+          else { row = await api.insert('mailing_lists', Object.assign({ filter: { desks: true } }, patch)); D.lists.push(row); }
+          rebuildIndex(); bump(); S.modal = null;
+          if (this.m.thenAdd) await actions.addToList(row.id, this.m.thenAdd);
+          go('mailing', { listId: row.id });
+        } catch (e) { this.err = e.message; } finally { this.busy = false; }
+      },
+    },
+    template: `
+<div class="modal-back" @click.self="close"><form class="modal" @submit.prevent="save">
+  <h3>{{ m.id ? 'Настройки рассылки' : 'Новый список рассылки' }}</h3>
+  <label class="field"><span>Название *</span><input class="input" v-model="name" required placeholder="Например: Финтех · деловые СМИ"></label>
+  <label class="field"><span>Клиент</span><input class="input" v-model="client" list="mk-clients2" placeholder="необязательно"></label>
+  <datalist id="mk-clients2"><option v-for="n in clients" :key="n" :value="n"></option></datalist>
+  <div class="field"><span>Тип списка</span><div class="seg">
+    <button type="button" :class="{on: kind==='static'}" @click="kind='static'">Ручной</button>
+    <button type="button" :class="{on: kind==='dynamic'}" @click="kind='dynamic'">Живой (по фильтру)</button></div>
+    <div class="small muted" style="margin-top:4px">{{ kind==='static' ? 'Вы сами добавляете людей. Список не меняется без вас.' : 'Список собирается по фильтру и сам подхватывает новых журналистов из базы.' }}</div></div>
+  <label class="field"><span>Заметка</span><textarea class="textarea" v-model="note" style="min-height:60px"></textarea></label>
+  <div v-if="err" class="banner">{{ err }}</div>
+  <div class="foot"><button type="button" class="btn ghost" @click="close">Отмена</button><button class="btn primary" :disabled="busy">Сохранить</button></div>
+</form></div>`,
+  };
+
+  const AddToList = {
+    mixins: [helpers], props: { m: Object },
+    data: () => ({ lid: '', busy: false }),
+    computed: { lists() { S.rev; return D.lists.filter(l => l.kind === 'static').sort((a, b) => a.name.localeCompare(b.name, 'ru')); } },
+    created() { if (this.lists.length) this.lid = this.lists[0].id; },
+    methods: {
+      close() { S.modal = null; },
+      clientName(id) { const c = ix().clientById.get(id); return c ? ' · ' + c.name : ''; },
+      async add() {
+        this.busy = true;
+        try { const r = await actions.addToList(+this.lid, this.m.ids); toast('Добавлено в рассылку: ' + r.added); this.m.done && this.m.done(); S.modal = null; }
+        catch (e) { toast('Ошибка: ' + e.message); } finally { this.busy = false; }
+      },
+      create() { S.modal = { kind: 'listForm', id: null, thenAdd: this.m.ids.slice() }; },
+    },
+    template: `
+<div class="modal-back" @click.self="close"><div class="modal">
+  <h3>Добавить в рассылку</h3>
+  <div class="muted">Контактов: {{ m.ids.length }}</div>
+  <label v-if="lists.length" class="field"><span>Список</span><select class="select" v-model="lid"><option v-for="l in lists" :key="l.id" :value="l.id">{{ l.name }}{{ clientName(l.client_id) }}</option></select></label>
+  <div v-else class="muted">Ручных списков пока нет.</div>
+  <div class="foot"><button class="btn" @click="create">+ Новый список</button><span class="grow"></span><button class="btn ghost" @click="close">Отмена</button><button class="btn primary" :disabled="!lid || busy" @click="add">Добавить</button></div>
+</div></div>`,
+  };
+
+  const MailingsView = {
+    mixins: [helpers], components: { Ic },
+    data: () => ({ client: '' }),
+    computed: {
+      clients() { S.rev; return D.clients; },
+      list() {
+        S.rev; return D.lists.filter(l => !this.client || String(l.client_id) === this.client)
+          .map(l => { const r = recipients(l); const last = D.sends.filter(s => s.list_id === l.id).sort((a, b) => b.sent_at.localeCompare(a.sent_at))[0]; return { l, n: r.ok.length, ex: r.excluded.length, last }; })
+          .sort((a, b) => a.l.name.localeCompare(b.l.name, 'ru'));
+      },
+    },
+    methods: {
+      create() { S.modal = { kind: 'listForm', id: null, clientId: this.client ? +this.client : null }; },
+      cname(id) { const c = ix().clientById.get(id); return c ? c.name : 'без клиента'; },
+    },
+    template: `
+<div>
+  <div class="page-head"><div><h1>Рассылки</h1><div class="muted small" style="margin-top:6px">Списки для массовой рассылки релизов. Адреса копируются пачками, «не любит рассылки», «отписался» и «негатив» исключаются сами.</div></div>
+    <button class="btn primary" @click="create"><Ic n="plus"/> Список</button></div>
+  <select class="fselect" :class="{set: client}" v-model="client" aria-label="Клиент" style="margin-bottom:14px"><option value="">Все клиенты</option><option v-for="c in clients" :key="c.id" :value="String(c.id)">{{ c.name }}</option></select>
+  <div v-if="!list.length" class="empty">Списков пока нет. Создайте список или отметьте журналистов на Медиакарте и нажмите «В рассылку».</div>
+  <div v-else class="card scroll-x" style="padding:0"><table class="tbl" style="min-width:640px">
+    <thead><tr><th>Список</th><th>Клиент</th><th>Тип</th><th>Получателей</th><th>Исключено</th><th>Последняя рассылка</th></tr></thead>
+    <tbody><tr v-for="x in list" :key="x.l.id" class="click" @click="go('mailing', {listId: x.l.id})">
+      <td><b>{{ x.l.name }}</b></td><td>{{ cname(x.l.client_id) }}</td><td class="small">{{ x.l.kind==='dynamic' ? 'живой' : 'ручной' }}</td>
+      <td class="mono">{{ x.n }}</td><td class="mono muted">{{ x.ex }}</td><td class="small">{{ x.last ? fmtDate(x.last.sent_at) + ' · ' + pname(x.last.sent_by) : '—' }}</td>
+    </tr></tbody></table></div>
+</div>`,
+  };
+
+  const MailingView = {
+    mixins: [helpers], components: { Ic },
+    data: () => ({ batch: 50, showEx: false, q: '', sending: false, campId: '' }),
+    computed: {
+      l() { S.rev; return D.lists.find(x => x.id === S.listId); },
+      r() { S.rev; return this.l ? recipients(this.l) : { ok: [], excluded: [] }; },
+      batches() { const out = []; for (let i = 0; i < this.r.ok.length; i += this.batch) out.push({ from: i + 1, to: Math.min(i + this.batch, this.r.ok.length), emails: this.r.ok.slice(i, i + this.batch).map(x => x.email) }); return out; },
+      shown() { const q = norm(this.q); return this.r.ok.filter(x => !q || norm(x.c.name + ' ' + x.email + ' ' + this.outletName(x.c.outlet_id)).includes(q)).slice(0, 300); },
+      sends() { S.rev; return D.sends.filter(s => s.list_id === S.listId).sort((a, b) => b.sent_at.localeCompare(a.sent_at)); },
+      camps() { S.rev; return D.campaigns.filter(c => !c.archived && (!this.l.client_id || c.client_id === this.l.client_id || !c.client_id)); },
+      f() { return this.l.filter || {}; },
+      topics() { S.rev; return D.dict.topic; }, tags() { S.rev; return D.dict.tag; },
+      geos() { S.rev; const s = new Set(); D.outlets.forEach(o => (o.geo || []).forEach(g => s.add(g))); return [...s].sort(); },
+      client() { S.rev; return this.l && ix().clientById.get(this.l.client_id); },
+    },
+    methods: {
+      async setF(k, v) {
+        const filter = Object.assign({}, this.f, { [k]: v }); if (v === '' || v === false) delete filter[k];
+        const row = await safe(() => api.update('mailing_lists', this.l.id, { filter })); Object.assign(this.l, row); bump();
+      },
+      copyBatch(b) { copy(b.emails.join(', '), 'Адреса ' + b.from + '–' + b.to); },
+      async remove(x) { await safe(() => api.removeMember(this.l.id, x.c.id)); D.members = markRaw(D.members.filter(m => !(m.list_id === this.l.id && m.contact_id === x.c.id))); rebuildIndex(); bump(); },
+      pick() { S.modal = { kind: 'picker', listId: this.l.id }; },
+      edit() { S.modal = { kind: 'listForm', id: this.l.id }; },
+      async del() {
+        if (!confirm('Убрать список «' + this.l.name + '» в корзину?')) return;
+        await safe(() => api.softDelete('mailing_lists', this.l.id), 'Список в корзине'); D.lists = markRaw(D.lists.filter(x => x.id !== this.l.id)); rebuildIndex(); bump(); go('mailings');
+      },
+      async markSent() {
+        if (!this.r.ok.length) return;
+        if (!confirm('Отметить, что рассылка по списку «' + this.l.name + '» ушла ' + this.r.ok.length + ' получателям?' + (this.campId ? ' Они попадут в медиалист инфоповода со статусом «Отправлено».' : ''))) return;
+        this.sending = true;
+        try {
+          const ids = this.r.ok.map(x => x.c.id);
+          const s = await api.insert('mailing_sends', { list_id: this.l.id, list_name: this.l.name, campaign_id: this.campId ? +this.campId : null, contact_ids: ids, sent_by: S.me.id });
+          D.sends.push(s);
+          if (this.campId) {
+            const now = new Date().toISOString();
+            const have = new Set((ix().itemsByCampaign.get(+this.campId) || []).map(i => i.contact_id));
+            const rows = ids.filter(id => !have.has(id)).map(id => ({ campaign_id: +this.campId, contact_id: id, owner: S.me.id, status: 'sent', channel: 'email', sent_at: now, note: 'рассылка «' + this.l.name + '»' }));
+            const res = await api.insertMany('campaign_items', rows); for (const r of res) D.items.push(r);
+          }
+          rebuildIndex(); bump(); toast('Записали рассылку в историю ' + ids.length + ' журналистов');
+        } catch (e) { toast('Ошибка: ' + e.message); } finally { this.sending = false; }
+      },
+      async exportX() { await exportXlsx('Рассылка — ' + this.l.name.replace(/[\\/:*?"<>|]/g, '') + '.xlsx', [['Получатели', this.r.ok.map(x => contactRow(x.c))], ['Исключены', this.r.excluded.map(x => Object.assign({ 'Причина': x.why }, contactRow(x.c)))]]); },
+      campTitle(id) { const c = D.campaigns.find(x => x.id === id); return c ? c.title : ''; },
+    },
+    template: `
+<div v-if="l">
+  <div class="page-head">
+    <div class="grow"><a href="#" class="small" @click.prevent="go('mailings')">← Все рассылки</a><h1 style="margin-top:6px">{{ l.name }}</h1>
+      <div class="muted small" style="margin-top:6px">{{ l.kind==='dynamic' ? 'Живой список' : 'Ручной список' }}<template v-if="client"> · <a href="#" @click.prevent="go('client', {clientId: client.id})">{{ client.name }}</a></template> · создал(а) {{ pname(l.created_by) }}</div></div>
+    <div class="row wrap">
+      <button v-if="l.kind==='static'" class="btn primary" @click="pick"><Ic n="plus"/> Журналисты</button>
+      <button class="btn" @click="edit"><Ic n="edit"/> Настройки</button>
+      <button class="btn" @click="exportX"><Ic n="down"/> Excel</button>
+      <button class="btn ghost" style="color:var(--danger)" aria-label="В корзину" @click="del"><Ic n="trash"/></button>
+    </div>
+  </div>
+  <div v-if="l.note" class="comment-box" style="margin-bottom:14px">{{ l.note }}</div>
+
+  <div v-if="l.kind==='dynamic'" class="card stack" style="margin-bottom:14px">
+    <h2 class="h2" style="margin:0">Фильтр списка</h2>
+    <div class="row wrap">
+      <select class="fselect" :class="{set: f.type}" :value="f.type || ''" @change="setF('type', $event.target.value)" aria-label="Тип"><option value="">Все типы</option><option>СМИ</option><option>Новые медиа</option><option>Блогеры</option></select>
+      <select class="fselect" :class="{set: f.topic}" :value="f.topic || ''" @change="setF('topic', $event.target.value)" aria-label="Тематика"><option value="">Тематика</option><option v-for="t in topics" :key="t">{{ t }}</option></select>
+      <select class="fselect" :class="{set: f.geo}" :value="f.geo || ''" @change="setF('geo', $event.target.value)" aria-label="География"><option value="">География</option><option v-for="g in geos" :key="g">{{ g }}</option></select>
+      <select class="fselect" :class="{set: f.tier}" :value="f.tier || ''" @change="setF('tier', $event.target.value)" aria-label="Tier"><option value="">Tier</option><option value="1">1</option><option value="2">2</option><option value="3">3</option></select>
+      <select class="fselect" :class="{set: f.relation}" :value="f.relation || ''" @change="setF('relation', $event.target.value)" aria-label="Отношение"><option value="">Отношение</option><option value="warm">Тёплые</option><option value="neutral">Нейтральные</option></select>
+      <select class="fselect" :class="{set: f.tag}" :value="f.tag || ''" @change="setF('tag', $event.target.value)" aria-label="Тег"><option value="">Тег</option><option v-for="t in tags" :key="t">{{ t }}</option></select>
+      <label class="toggle"><input type="checkbox" :checked="!!f.desks" @change="setF('desks', $event.target.checked)"> С общими ящиками редакций</label>
+    </div>
+  </div>
+
+  <div class="card stack" style="margin-bottom:14px">
+    <div class="row wrap"><h2 class="h2 grow" style="margin:0">Копировать адреса</h2>
+      <span class="small muted">по</span><select class="select" style="width:90px; height:32px" v-model.number="batch" aria-label="Размер пачки"><option :value="30">30</option><option :value="50">50</option><option :value="100">100</option></select><span class="small muted">в пачке</span></div>
+    <div class="muted small">Получателей: <b>{{ r.ok.length }}</b>. Вставляйте адреса в поле «Скрытая копия» (BCC), чтобы журналисты не видели друг друга. Почтовики режут письма, в которых больше 50–100 получателей.</div>
+    <div class="row wrap"><button v-for="b in batches" :key="b.from" class="btn" @click="copyBatch(b)"><Ic n="copy"/> {{ b.from }}–{{ b.to }}</button></div>
+    <div class="row wrap" style="border-top:1px solid var(--line); padding-top:10px">
+      <span class="small">Разослали?</span>
+      <select class="select" style="max-width:320px; height:34px" v-model="campId" aria-label="Инфоповод"><option value="">без привязки к инфоповоду</option><option v-for="c in camps" :key="c.id" :value="String(c.id)">в медиалист: {{ c.title }}</option></select>
+      <button class="btn primary sm" :disabled="sending || !r.ok.length" @click="markSent"><Ic n="check"/> Отметить: разослано</button>
+    </div>
+  </div>
+
+  <div class="row wrap" style="margin-bottom:8px"><input class="input" style="max-width:280px; height:34px" v-model="q" placeholder="Найти в списке" aria-label="Найти в списке">
+    <a v-if="r.excluded.length" href="#" class="small" @click.prevent="showEx=!showEx">{{ showEx ? 'Скрыть' : 'Показать' }} исключённых ({{ r.excluded.length }})</a></div>
+  <div v-if="showEx" class="card scroll-x" style="padding:0; margin-bottom:12px"><table class="tbl"><tbody>
+    <tr v-for="x in r.excluded" :key="x.c.id" class="click" @click="openContact(x.c.id)"><td><b>{{ x.c.name }}</b></td><td>{{ outletName(x.c.outlet_id) }}</td><td class="small"><span class="status declined">{{ x.why }}</span></td></tr>
+  </tbody></table></div>
+  <div class="card scroll-x" style="padding:0"><table class="tbl" style="min-width:640px">
+    <thead><tr><th>Журналист</th><th>Издание</th><th>Почта</th><th v-if="l.kind==='static'"></th></tr></thead>
+    <tbody><tr v-for="x in shown" :key="x.c.id">
+      <td><a href="#" @click.prevent="openContact(x.c.id)"><b>{{ x.c.name }}</b></a> <span class="small muted">{{ x.c.role }}</span></td>
+      <td>{{ outletName(x.c.outlet_id) }}</td><td class="small">{{ x.email }}</td>
+      <td v-if="l.kind==='static'"><button class="icon-btn" aria-label="Убрать из списка" @click="remove(x)"><Ic n="close"/></button></td>
+    </tr></tbody></table>
+    <div v-if="!r.ok.length" class="empty">{{ l.kind==='static' ? 'Список пуст. Добавьте журналистов кнопкой сверху или с Медиакарты.' : 'Под фильтр никто не попал.' }}</div>
+    <div v-if="r.ok.length > 300 && shown.length === 300" class="small muted" style="padding:8px">Показаны первые 300. Копирование и выгрузка работают по всему списку.</div>
+  </div>
+  <div v-if="sends.length" class="card" style="margin-top:14px"><h2 class="h2">История рассылок</h2>
+    <div v-for="s in sends" :key="s.id" class="note small">{{ fmtDate(s.sent_at) }} · {{ pname(s.sent_by) }} · {{ (s.contact_ids||[]).length }} получателей<template v-if="s.campaign_id"> · инфоповод «{{ campTitle(s.campaign_id) }}»</template></div></div>
+</div>
+<div v-else class="empty">Список не найден. <a href="#" @click.prevent="go('mailings')">К рассылкам</a></div>`,
+  };
+
+  // ====================== 2.0 · АКТУАЛИЗАЦИЯ ======================
+  const VerifyView = {
+    mixins: [helpers], components: { Ic },
+    data: () => ({ loading: true }),
+    async created() {
+      try { await api.assignVerify(); D.tasks = markRaw(await api.verifyTasks()); bump(); }
+      catch (e) { toast('Ошибка: ' + e.message); } finally { this.loading = false; }
+    },
+    computed: {
+      mine() { S.rev; return D.tasks.filter(t => t.user_id === S.me.id).map(t => ({ t, c: ix().contactById.get(t.contact_id) })).filter(x => x.c).sort((a, b) => (!!a.t.result - !!b.t.result) || a.t.id - b.t.id); },
+      done() { return this.mine.filter(x => x.t.result).length; },
+      team() {
+        S.rev; const by = new Map();
+        for (const t of D.tasks) { if (!by.has(t.user_id)) by.set(t.user_id, { total: 0, done: 0 }); const s = by.get(t.user_id); s.total++; if (t.result) s.done++; }
+        return [...by.entries()].map(([id, s]) => ({ id, name: pname(id), ...s }));
+      },
+      backlog() { S.rev; const y = Date.now() - 365 * 864e5; return D.contacts.filter(c => !c.is_desk && !c.inactive && (!c.verified_at || new Date(c.verified_at) < y)).length; },
+    },
+    methods: {
+      async finish(x, result) {
+        try {
+          if (result === 'ok' || result === 'changed') await actions.saveContact(x.c.id, { verified_at: new Date().toISOString().slice(0, 10), verified_by: S.me.id });
+          if (result === 'inactive') await actions.saveContact(x.c.id, { inactive: true });
+          const row = await api.update('verify_tasks', x.t.id, { result, done_at: new Date().toISOString() }); Object.assign(x.t, row); bump();
+        } catch (e) { toast('Ошибка: ' + e.message); }
+      },
+      move(x) { S.modal = { kind: 'move', id: x.c.id }; this.finish(x, 'changed'); },
+      label(r) { return { ok: '✓ актуален', changed: '✓ обновлён', inactive: 'не работает', skipped: 'пропущен' }[r]; },
+    },
+    template: `
+<div>
+  <div class="page-head"><div><h1>Актуализация</h1><div class="muted small" style="margin-top:6px">Каждую неделю система выдаёт вам контакты, которые давно никто не проверял. Сначала тех, с кем вы работаете (пул, питчи), потом Tier 1. Всего ждут проверки: {{ backlog.toLocaleString('ru') }}.</div></div></div>
+  <div v-if="loading" class="loading">Собираем контакты на эту неделю…</div>
+  <template v-else>
+    <div class="card stack" style="margin-bottom:16px">
+      <div class="row"><b class="grow">Моя неделя: {{ done }} из {{ mine.length }}</b><span v-if="mine.length && done===mine.length" class="status published">всё проверено 🎉</span></div>
+      <div class="progress"><i :style="{width: (mine.length ? done / mine.length * 100 : 0) + '%'}"></i></div>
+      <div class="small muted">Как проверять: загляните на сайт издания или в соцсети журналиста, убедитесь, что он там работает, и обновите почту или телефон, если нужно.</div>
+    </div>
+    <div class="stack">
+      <div v-for="x in mine" :key="x.t.id" class="card row wrap" :style="x.t.result ? 'opacity:.55' : ''" style="gap:14px">
+        <div class="grow" style="min-width:240px">
+          <a href="#" @click.prevent="openContact(x.c.id)"><b>{{ x.c.name }}</b></a> <span class="muted small">{{ x.c.role }}</span>
+          <div class="small">{{ outletName(x.c.outlet_id) }} · {{ (x.c.emails||[])[0] || 'нет почты' }} · {{ (x.c.phones||[])[0] || 'нет телефона' }}</div>
+          <div class="small muted">{{ x.c.verified_at ? 'проверен ' + fmtDate(x.c.verified_at) : (x.c.verified_note ? 'в старой базе: ' + x.c.verified_note : 'ещё не проверялся') }}</div>
+        </div>
+        <template v-if="!x.t.result">
+          <button class="btn primary sm" @click="finish(x, 'ok')"><Ic n="check"/> Актуален</button>
+          <button class="btn sm" @click="openContact(x.c.id)">Открыть и поправить</button>
+          <button class="btn sm" @click="finish(x, 'changed')">Поправил(а)</button>
+          <button class="btn sm" @click="move(x)">Перешёл</button>
+          <button class="btn sm" @click="finish(x, 'inactive')">Не работает</button>
+          <button class="btn ghost sm" @click="finish(x, 'skipped')">Пропустить</button>
+        </template>
+        <span v-else class="status">{{ label(x.t.result) }}</span>
+      </div>
+      <div v-if="!mine.length" class="empty">На этой неделе проверять некого. Отличная работа!</div>
+    </div>
+    <div v-if="isAdmin() && team.length" class="card" style="margin-top:16px"><h2 class="h2">Команда на этой неделе</h2>
+      <div v-for="u in team" :key="u.id" class="note row"><span class="grow">{{ u.name }}</span><span class="mono">{{ u.done }} / {{ u.total }}</span></div></div>
+  </template>
+</div>`,
+  };
+
   // ====================== АДМИНКА ======================
   const AdminView = {
     mixins: [helpers], components: { Ic, DupsView, TrashView },
-    data: () => ({ tab: 'users', newTopic: '', newTag: '', days: D.settings.collision_days || 7, file: null, preview: null, importing: false, progress: 0, importLog: '' }),
+    data: () => ({ tab: 'users', newTopic: '', newTag: '', days: D.settings.collision_days || 7, perWeek: D.settings.verify_per_week || 20, file: null, preview: null, importing: false, progress: 0, importLog: '' }),
     created() { if (!D.contacts.length) this.tab = 'import'; },
     computed: {
       profiles() { S.rev; return D.profiles; }, topics() { S.rev; return D.dict.topic; }, tags() { S.rev; return D.dict.tag; },
@@ -1698,6 +2294,8 @@
         if (!confirm('Убрать «' + v + '» из справочника? У существующих карточек значение останется.')) return;
         await safe(() => api.dictRemove(kind, v)); D.dict[kind] = D.dict[kind].filter(x => x !== v); bump();
       },
+      async savePerWeek() { await safe(() => api.setSetting('verify_per_week', +this.perWeek || 20), 'Сохранено. Действует со следующей недели'); D.settings.verify_per_week = +this.perWeek || 20; },
+      stage2: () => S.stage2,
       async saveDays() { await safe(() => api.setSetting('collision_days', +this.days || 7), 'Сохранено'); D.settings.collision_days = +this.days || 7; bump(); },
       async readFile(e) {
         const f = e.target.files[0]; if (!f) return;
@@ -1745,6 +2343,7 @@
     </tbody></table></div>
     <div class="banner info">Как добавить коллегу: откройте <a :href="supaUsersUrl" target="_blank" rel="noopener">Supabase → Authentication → Users</a>, нажмите «Add user → Create new user», впишите почту и временный пароль, поставьте галочку «Auto Confirm User». Коллега появится здесь после первого входа и сможет сменить пароль в настройках.</div>
     <div class="card stack"><h2 class="h2">Защита от двойного питча</h2>
+      <div v-if="stage2()" class="row"><span>Актуализация: выдавать каждому сотруднику по</span><input class="input" type="number" min="5" max="100" style="width:80px" v-model="perWeek" aria-label="Контактов в неделю"><span>контактов в неделю</span><button class="btn" @click="savePerWeek">Сохранить</button></div>
       <div class="row"><span>Предупреждать, если журналисту уже писали за последние</span><input class="input" type="number" min="1" max="60" style="width:80px" v-model="days" aria-label="Дней"><span>дней</span><button class="btn" @click="saveDays">Сохранить</button></div></div>
   </div>
 
@@ -1780,7 +2379,8 @@
 
   // ====================== КОРЕНЬ ======================
   const Root = {
-    components: { Login, Nav, MapView, ContactDrawer, OutletDrawer, ContactForm, OutletForm, CampaignForm, AddToCampaign, Picker, CampaignsView, CampaignView, PoolView, DashView, SettingsView, AdminView, MoveModal, BulkEdit },
+    components: { Login, Nav, MapView, ContactDrawer, OutletDrawer, ContactForm, OutletForm, CampaignForm, AddToCampaign, Picker, CampaignsView, CampaignView, PoolView, DashView, SettingsView, AdminView, MoveModal, BulkEdit,
+      ClientsView, ClientView, MailingsView, MailingView, ListForm, AddToList, VerifyView },
     computed: { s: () => S },
     mounted() {
       boot();
@@ -1792,6 +2392,36 @@
         }
       });
       window.addEventListener('keydown', e => { if (e.key === 'Escape') { if (S.modal) S.modal = null; else if (S.drawer) S.drawer = null; } });
+      // напоминания о фоллоу-апах и новые упоминания
+      const shown = new Set();
+      const notify = (title, body, contactId) => {
+        toast(title + (body ? ': ' + body : ''));
+        try {
+          if ('Notification' in window && Notification.permission === 'granted') {
+            const n = new Notification(title, { body, tag: 'mk-' + title + body });
+            n.onclick = () => { window.focus(); if (contactId) openContact(contactId); n.close(); };
+          }
+        } catch (e) {}
+      };
+      let lastPoll = 0;
+      setInterval(async () => {
+        S.tick = Date.now();
+        if (!S.me || !S.stage2) return;
+        for (const x of dueFollowups()) {
+          if (!x.due || shown.has(x.i.id + x.i.followup_at)) continue;
+          shown.add(x.i.id + x.i.followup_at);
+          const c = ix().contactById.get(x.i.contact_id), cp = D.campaigns.find(k => k.id === x.i.campaign_id);
+          notify('Пора дожать: ' + (c ? c.name : ''), cp ? '«' + cp.title + '»' : '', x.i.contact_id);
+        }
+        if (Date.now() - lastPoll > 120000) {
+          lastPoll = Date.now();
+          try {
+            const fresh = await api.notifications(); const known = new Set(D.notifs.map(n => n.id));
+            for (const n of fresh) if (!known.has(n.id) && !n.read_at) notify(pname(n.created_by) + ' упомянул(а) вас', (n.text || '').slice(0, 80), n.contact_id);
+            D.notifs = markRaw(fresh); bump();
+          } catch (e) { console.error(e); }
+        }
+      }, 30000);
     },
     methods: { retry() { loadData(); } },
     template: `
@@ -1804,7 +2434,7 @@
 <div v-else class="app" :class="{'with-drawer': !!s.drawer}">
   <Nav />
   <main class="main">
-    <div v-if="s.needsUpdate" class="banner" style="margin-bottom:16px">Вышло обновление Медиакарты 2.0, но база данных ещё не обновлена: новые функции (корзина, дубли, переходы, массовое редактирование) пока не работают. Администратору нужно выполнить файл <b>supabase/update-2.0-stage1.sql</b> в Supabase → SQL Editor и обновить страницу.</div>
+    <div v-if="s.needsUpdate" class="banner" style="margin-bottom:16px">Вышло обновление Медиакарты, но база данных ещё не обновлена, поэтому часть новых функций пока не работает. Администратору нужно выполнить файл <b>supabase/{{ s.needsUpdate }}</b> в Supabase → SQL Editor и обновить страницу.</div>
     <DashView v-if="s.view==='dash'" />
     <MapView v-else-if="s.view==='map'" />
     <CampaignsView v-else-if="s.view==='campaigns'" />
@@ -1812,6 +2442,11 @@
     <PoolView v-else-if="s.view==='pool'" />
     <SettingsView v-else-if="s.view==='settings'" />
     <AdminView v-else-if="s.view==='admin'" />
+    <ClientsView v-else-if="s.view==='clients'" />
+    <ClientView v-else-if="s.view==='client'" :key="'cl' + s.clientId" />
+    <MailingsView v-else-if="s.view==='mailings'" />
+    <MailingView v-else-if="s.view==='mailing'" :key="'ml' + s.listId" />
+    <VerifyView v-else-if="s.view==='verify'" />
   </main>
   <div class="drawer-wrap" v-if="s.drawer">
     <ContactDrawer v-if="s.drawer.kind==='contact'" :id="s.drawer.id" :key="'c' + s.drawer.id" />
@@ -1824,6 +2459,8 @@
   <Picker v-if="s.modal && s.modal.kind==='picker'" :m="s.modal" />
   <MoveModal v-if="s.modal && s.modal.kind==='move'" :m="s.modal" />
   <BulkEdit v-if="s.modal && s.modal.kind==='bulk'" :m="s.modal" />
+  <ListForm v-if="s.modal && s.modal.kind==='listForm'" :m="s.modal" />
+  <AddToList v-if="s.modal && s.modal.kind==='addToList'" :m="s.modal" />
 </div>
 <div v-if="s.toast" class="toast" role="status">{{ s.toast }}</div>`,
   };

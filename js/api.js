@@ -3,6 +3,9 @@
 (function () {
   const cfg = window.MK_CONFIG || {};
   const DEMO = !cfg.supabaseUrl || !cfg.supabaseAnonKey;
+  // понедельник текущей недели, как date_trunc('week') в Postgres
+  function weekStart() { const d = new Date(); const day = (d.getDay() + 6) % 7; d.setDate(d.getDate() - day); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+  window.MK_WEEK = weekStart;
 
   // ---------------- Supabase ----------------
   function supabaseApi() {
@@ -46,11 +49,28 @@
       onAuth(cb) { sb.auth.onAuthStateChange((ev, s) => cb(ev, s ? s.user : null)); },
 
       async loadAll(progress) {
-        try { return await this.loadAllV2(progress, true); }
+        try { const r = await this.loadAllV2(progress, true); await this.loadStage2(r); return r; }
         catch (e) {
           // база ещё не обновлена до 2.0 — работаем в прежнем режиме и просим админа применить обновление
           if (!/deleted_at|contact_moves|dup_ignores|does not exist|schema cache/i.test(e.message)) throw e;
-          const r = await this.loadAllV2(progress, false); r.needsUpdate = true; return r;
+          const r = await this.loadAllV2(progress, false); r.needsUpdate = 'update-2.0-stage1.sql'; return r;
+        }
+      },
+      async loadStage2(r) {
+        try {
+          const week = weekStart();
+          const [clients, lists, members, sends, notifs, tasks] = await Promise.all([
+            fetchAll('clients', '*', 'id', null, q => q.is('deleted_at', null)),
+            fetchAll('mailing_lists', '*', 'id', null, q => q.is('deleted_at', null)),
+            fetchAll('mailing_members', 'list_id,contact_id,added_at', 'list_id'),
+            fetchAll('mailing_sends', '*'),
+            sb.from('notifications').select('*').order('created_at', { ascending: false }).limit(100).then(must),
+            sb.from('verify_tasks').select('*').eq('week_start', week).then(must),
+          ]);
+          Object.assign(r, { clients, lists, members, sends, notifs, tasks, stage2: true });
+        } catch (e) {
+          if (!/does not exist|schema cache|client_id|followup_at/i.test(e.message)) throw e;
+          Object.assign(r, { needsUpdate: 'update-2.0-stage2.sql' });
         }
       },
       async loadAllV2(progress, v2) {
@@ -78,9 +98,12 @@
         };
       },
       async insert(table, row) { return must(await sb.from(table).insert(row).select().single()); },
-      async insertMany(table, rows) {
+      async insertMany(table, rows, conflict) {
         if (!rows.length) return [];
-        return must(await sb.from(table).upsert(rows, { onConflict: 'campaign_id,contact_id', ignoreDuplicates: true }).select());
+        const out = [];
+        for (let i = 0; i < rows.length; i += 500)
+          out.push(...must(await sb.from(table).upsert(rows.slice(i, i + 500), { onConflict: conflict || 'campaign_id,contact_id', ignoreDuplicates: true }).select()));
+        return out;
       },
       async update(table, id, patch) { return must(await sb.from(table).update(patch).eq('id', id).select().single()); },
       async remove(table, id) { must(await sb.from(table).delete().eq('id', id)); },
@@ -107,8 +130,9 @@
       async restore(table, id) { return must(await sb.from(table).update({ deleted_at: null }).eq('id', id).select().single()); },
       async trash() {
         const q = t => sb.from(t).select('*').not('deleted_at', 'is', null).order('deleted_at', { ascending: false }).limit(500).then(must);
-        const [outlets, contacts, campaigns] = await Promise.all([q('outlets'), q('contacts'), q('campaigns')]);
-        return { outlets, contacts, campaigns };
+        const soft = t => q(t).catch(() => []);
+        const [outlets, contacts, campaigns, clients, mailing_lists] = await Promise.all([q('outlets'), q('contacts'), q('campaigns'), soft('clients'), soft('mailing_lists')]);
+        return { outlets, contacts, campaigns, clients, mailing_lists };
       },
       async purgeTrash() { return must(await sb.rpc('purge_trash')); },
       async moveContact(id, to, role) { must(await sb.rpc('move_contact', { p_contact: id, p_to: to, p_role: role || null })); },
@@ -123,6 +147,13 @@
         return out;
       },
       async dupIgnore(kind, a, b) { must(await sb.from('dup_ignores').upsert({ kind, a: Math.min(a, b), b: Math.max(a, b) }, { ignoreDuplicates: true })); },
+      // --- 2.0 этап 2 ---
+      async removeMember(listId, cid) { must(await sb.from('mailing_members').delete().eq('list_id', listId).eq('contact_id', cid)); },
+      async markRead(ids) { if (ids.length) must(await sb.from('notifications').update({ read_at: new Date().toISOString() }).in('id', ids)); },
+      async notifications() { return must(await sb.from('notifications').select('*').order('created_at', { ascending: false }).limit(100)); },
+      async assignVerify() { return must(await sb.rpc('assign_verify_tasks')); },
+      async verifyTasks() { return must(await sb.from('verify_tasks').select('*').eq('week_start', weekStart())); },
+      async itemsFresh() { return fetchAll('campaign_items', '*'); },
     };
   }
 
@@ -135,7 +166,9 @@
     const clone = x => JSON.parse(JSON.stringify(x));
     const me = db.profiles[0];
     let logged = false;
-    const tables = { outlets: 1, contacts: 1, campaigns: 1, campaign_items: 1, notes: 1 };
+    const tables = { outlets: 1, contacts: 1, campaigns: 1, campaign_items: 1, notes: 1, clients: 1, mailing_lists: 1, mailing_sends: 1, notifications: 1, verify_tasks: 1 };
+    for (const k of ['clients', 'mailing_lists', 'mailing_members', 'mailing_sends', 'notifications', 'verify_tasks']) db[k] = db[k] || [];
+    for (const k of Object.keys(tables)) seq[k] = db[k].reduce((m, r) => Math.max(m, r.id || 0), 0);
     db.contact_moves = db.contact_moves || []; db.dup_ignores = db.dup_ignores || []; seq.contact_moves = 0;
     const auditLog = (table, id, action, diff) => db.audit_log.push({ id: ++seq.audit_log, table_name: table, row_id: id, action, changed_by: me.id, changed_at: now(), diff });
 
@@ -151,6 +184,8 @@
         progress && progress(100);
         const alive = a => clone(a.filter(r => !r.deleted_at));
         return {
+          stage2: true, clients: alive(db.clients), lists: alive(db.mailing_lists), members: clone(db.mailing_members), sends: clone(db.mailing_sends),
+          notifs: clone(db.notifications.filter(n => n.user_id === me.id).reverse()), tasks: clone(db.verify_tasks.filter(x => x.week_start === weekStart())),
           moves: clone(db.contact_moves), ignores: clone(db.dup_ignores),
           outlets: alive(db.outlets), contacts: alive(db.contacts), campaigns: alive(db.campaigns),
           items: clone(db.campaign_items), profiles: clone(db.profiles), favorites: db.favorites.slice(),
@@ -162,13 +197,18 @@
         const r = Object.assign({}, row, { id: ++seq[table], created_at: now() });
         if (table === 'notes') r.author = me.id;
         if (['outlets', 'contacts', 'campaign_items'].includes(table)) { r.updated_at = now(); r.created_by = me.id; }
-        if (table === 'campaigns') r.created_by = me.id;
+        if (['campaigns', 'clients', 'mailing_lists', 'mailing_sends'].includes(table)) r.created_by = r.created_by || me.id;
+        if (table === 'mailing_sends') r.sent_at = now();
         db[table].push(r);
         if (table === 'contacts' || table === 'outlets') auditLog(table, r.id, 'insert', null);
         return clone(r);
       },
       async insertMany(table, rows) {
         const out = [];
+        if (table === 'mailing_members') {
+          for (const row of rows) if (!db.mailing_members.some(m => m.list_id === row.list_id && m.contact_id === row.contact_id)) { const m = Object.assign({ added_at: now(), added_by: me.id }, row); db.mailing_members.push(m); out.push(clone(m)); }
+          return out;
+        }
         for (const row of rows) {
           if (db.campaign_items.some(i => i.campaign_id === row.campaign_id && i.contact_id === row.contact_id)) continue;
           out.push(await this.insert(table, Object.assign({ status: 'not_sent', owner: me.id }, row)));
@@ -221,7 +261,7 @@
       async restore(table, id) { return this.update(table, id, { deleted_at: null, deleted_by: null }); },
       async trash() {
         const q = t => clone(db[t].filter(r => r.deleted_at).sort((a, b) => b.deleted_at.localeCompare(a.deleted_at)));
-        return { outlets: q('outlets'), contacts: q('contacts'), campaigns: q('campaigns') };
+        return { outlets: q('outlets'), contacts: q('contacts'), campaigns: q('campaigns'), clients: q('clients'), mailing_lists: q('mailing_lists') };
       },
       async purgeTrash() {
         const old = r => r.deleted_at && Date.now() - new Date(r.deleted_at) > 30 * 864e5;
@@ -288,6 +328,20 @@
       },
       async rowsByIds(table, ids) { const s = new Set(ids); return clone(db[table].filter(r => s.has(r.id))); },
       async dupIgnore(kind, a, b) { db.dup_ignores.push({ kind, a: Math.min(a, b), b: Math.max(a, b) }); },
+      // --- 2.0 этап 2 ---
+      async removeMember(listId, cid) { db.mailing_members = db.mailing_members.filter(m => !(m.list_id === listId && m.contact_id === cid)); },
+      async markRead(ids) { db.notifications.forEach(n => { if (ids.includes(n.id)) n.read_at = now(); }); },
+      async notifications() { return clone(db.notifications.filter(n => n.user_id === me.id).reverse()); },
+      async assignVerify() {
+        const wk = weekStart();
+        if (db.verify_tasks.some(x => x.user_id === me.id && x.week_start === wk)) return 0;
+        const pick = db.contacts.filter(c => !c.deleted_at && !c.is_desk && !c.inactive && (!c.verified_at || Date.now() - new Date(c.verified_at) > 365 * 864e5)
+          && !db.verify_tasks.some(x => x.contact_id === c.id)).slice(0, 20);
+        for (const c of pick) db.verify_tasks.push({ id: ++seq.verify_tasks, contact_id: c.id, user_id: me.id, week_start: wk, result: null, done_at: null });
+        return pick.length;
+      },
+      async verifyTasks() { return clone(db.verify_tasks.filter(x => x.week_start === weekStart())); },
+      async itemsFresh() { return clone(db.campaign_items); },
     };
   }
 

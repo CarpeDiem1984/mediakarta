@@ -144,7 +144,16 @@ window.MK_DEMO_DATA = function () {
   if (dupSrc) contacts.push(Object.assign({}, dupSrc, { id: ++cid, name: dupSrc.name.split(' ').reverse().join(' '), emails: [dupSrc.emails[0].toUpperCase()], phones: [], comment: 'Из второй базы: просит писать в TG', tags: [], sources: ['Демо-2'] }));
   outlets.push(Object.assign({}, outlets[2], { id: outlets.length + 1, name: 'Коммерсантъ', topics: ['Общество и новости'], sources: ['Демо-2'] }));
   contacts.push({ id: ++cid, outlet_id: outlets.length, is_desk: false, name: 'Глеб Громов', role: 'Обозреватель', topics: [], emails: ['g.gromov@kommersant.ru'], phones: [], telegram: [], socials: [], relation: 'neutral', tags: [], sources: ['Демо-2'], created_at: day(10), updated_at: day(10) });
+  const clients = [{ id: 1, name: 'Финтех-клиент', created_by: 'u-masha', created_at: day(60) }, { id: 2, name: 'Банк', created_by: 'u-admin', created_at: day(90) }, { id: 3, name: 'Ритейл', created_by: 'u-oleg', created_at: day(120) }];
+  campaigns.forEach(c => { c.client_id = (clients.find(k => k.name === c.client) || {}).id || null; });
+  const mailing_lists = [{ id: 1, name: 'Финтех · деловые СМИ', client_id: 1, kind: 'dynamic', filter: { topic: 'Финансы и банки', desks: true }, created_by: 'u-masha', created_at: day(20) },
+    { id: 2, name: 'Банк · ключевые', client_id: 2, kind: 'static', filter: {}, created_by: 'u-admin', created_at: day(30) }];
+  const mailing_members = people.slice(0, 12).map(c => ({ list_id: 2, contact_id: c.id, added_at: day(30) }));
+  people[1].tags = ['не любит рассылки'];
+  const notifications = [{ id: 1, user_id: 'u-admin', kind: 'mention', contact_id: anna.id, note_id: 1, text: '@Кирилл П. она просила прислать данные до пятницы', created_by: 'u-masha', created_at: day(0), read_at: null }];
+  items.filter(i => i.campaign_id === 1 && i.status === 'sent').slice(0, 2).forEach((i, k) => { i.owner = 'u-admin'; i.followup_at = new Date(Date.now() + (k ? 3 : -1) * 3600e3).toISOString(); });
   return {
+    clients, mailing_lists, mailing_members, mailing_sends: [], notifications, verify_tasks: [],
     profiles, outlets, contacts, campaigns, campaign_items: items, notes,
     favorites: [anna.id].concat(people.filter((_, i) => i % 11 === 0).map(c => c.id)),
     dictionaries, settings: { collision_days: 7 }, audit_log: []
