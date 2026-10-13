@@ -181,10 +181,11 @@
   }
   // Мост для обновления статистики через Chrome (Instagram, SimilarWeb): вызывается из консоли страницы
   window.MK_STATS = {
-    list(kind) {
-      const old = at => !at || Date.now() - new Date(at) > 25 * 864e5;
+    list(kind, opts) {
+      opts = opts || {};
+      const old = at => opts.force || !at || Date.now() - new Date(at) > 25 * 864e5;
       if (kind === 'instagram') return D.outlets.filter(o => /instagram\.com\//i.test(o.website || '') && old(o.subscribers_at)).map(o => ({ id: o.id, name: o.name, url: o.website }));
-      if (kind === 'similarweb') return D.outlets.filter(o => o.type === 'СМИ' && (o.tier || 9) <= (+((D.settings || {}).sw_max_tier) || 1) && safeUrl(o.website) && !/t\.me|youtube|vk\.com|instagram/i.test(o.website) && old(o.visits_at))
+      if (kind === 'similarweb') return D.outlets.filter(o => o.type === 'СМИ' && (o.tier || 9) <= (opts.maxTier || +((D.settings || {}).sw_max_tier) || 1) && safeUrl(o.website) && !/t\.me|youtube|vk\.com|instagram/i.test(o.website) && old(o.visits_at))
         .map(o => ({ id: o.id, name: o.name, domain: safeUrl(o.website).replace(/^https?:\/\/(www\.)?/, '').split('/')[0] }));
       return [];
     },
