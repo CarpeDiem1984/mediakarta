@@ -12,12 +12,15 @@
     const sb = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey, {
       auth: { persistSession: true, autoRefreshToken: true }
     });
-    const must = ({ data, error }) => { if (error) throw new Error(error.message); return data; };
+    const must = ({ data, error, status }) => {
+      if (error) throw new Error(error.message || error.details || error.hint || error.code || ('HTTP ' + status));
+      return data;
+    };
 
     async function fetchAll(table, columns, order = 'id', onPage, filt) {
       const f = q => filt ? filt(q) : q;
-      const { count, error } = await f(sb.from(table).select('id', { count: 'exact', head: true }));
-      if (error) throw new Error(error.message);
+      const { count, error, status } = await f(sb.from(table).select('*', { count: 'exact', head: true }));
+      if (error) throw new Error(error.message || error.details || error.code || ('HTTP ' + status + ' (' + table + ')'));
       const size = 1000, pages = Math.max(1, Math.ceil((count || 0) / size));
       const out = new Array(pages);
       let next = 0, done = 0;
@@ -149,6 +152,7 @@
       async dupIgnore(kind, a, b) { must(await sb.from('dup_ignores').upsert({ kind, a: Math.min(a, b), b: Math.max(a, b) }, { ignoreDuplicates: true })); },
       // --- 2.0 этап 2 ---
       async removeMember(listId, cid) { must(await sb.from('mailing_members').delete().eq('list_id', listId).eq('contact_id', cid)); },
+      async notify(row) { must(await sb.from('notifications').insert(row)); },
       async markRead(ids) { if (ids.length) must(await sb.from('notifications').update({ read_at: new Date().toISOString() }).in('id', ids)); },
       async notifications() { return must(await sb.from('notifications').select('*').order('created_at', { ascending: false }).limit(100)); },
       async assignVerify() { return must(await sb.rpc('assign_verify_tasks')); },
@@ -330,6 +334,7 @@
       async dupIgnore(kind, a, b) { db.dup_ignores.push({ kind, a: Math.min(a, b), b: Math.max(a, b) }); },
       // --- 2.0 этап 2 ---
       async removeMember(listId, cid) { db.mailing_members = db.mailing_members.filter(m => !(m.list_id === listId && m.contact_id === cid)); },
+      async notify(row) { await this.insert('notifications', row); },
       async markRead(ids) { db.notifications.forEach(n => { if (ids.includes(n.id)) n.read_at = now(); }); },
       async notifications() { return clone(db.notifications.filter(n => n.user_id === me.id).reverse()); },
       async assignVerify() {

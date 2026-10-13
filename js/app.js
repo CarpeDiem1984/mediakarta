@@ -620,7 +620,7 @@
           if (S.stage2) {
             const low = body.toLowerCase();
             const who = D.profiles.filter(p => p.id !== S.me.id && p.full_name && low.includes('@' + p.full_name.toLowerCase()));
-            for (const p of who) await api.insert('notifications', { user_id: p.id, kind: 'mention', contact_id: this.c.id, note_id: n.id, text: body.slice(0, 300), created_by: S.me.id }).catch(e => console.error(e));
+            for (const p of who) await api.notify({ user_id: p.id, kind: 'mention', contact_id: this.c.id, note_id: n.id, text: body.slice(0, 300), created_by: S.me.id }).catch(e => console.error(e));
             if (who.length) toast('Уведомили: ' + who.map(p => p.full_name).join(', '));
           }
         } finally { this.busy = false; }
