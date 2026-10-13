@@ -176,12 +176,22 @@ window.MK_DEMO_DATA = function () {
     { id: 1, contact_id: anna.id, url: 'https://www.vedomosti.ru/finance/articles/demo-bnpl', title: 'Рынок BNPL вырос в полтора раза — Ведомости', published_at: day(6), source: 'google_news', hidden: false },
     { id: 2, contact_id: anna.id, url: 'https://www.vedomosti.ru/finance/articles/demo-cashback', title: 'Банки урезают кешбэк — Ведомости', published_at: day(21), source: 'google_news', hidden: false },
   ];
+  const experts = [
+    { id: 1, name: 'Игорь Светлов', position: 'Врач-сомнолог, к.м.н., руководитель центра медицины сна', topics: ['Здоровье'], phones: ['+7 900 000-00-01'], emails: [], telegram: '@demo_sleep', contact_via: null, owner_note: 'Маша, проект «Сон»', note: 'Любит голосовые, отвечает в течение дня. Презентации скучные — лучше брать цитаты.', examples: ['https://example.com/sleep-article'], client_id: null, created_at: day(90) },
+    { id: 2, name: 'Ольга Миронова', position: 'Финансовый аналитик, партнёр консалтингового бюро', topics: ['Финансы и банки', 'Бизнес и экономика'], phones: ['+7 900 000-00-02'], emails: ['olga@example.com'], telegram: '@demo_fin', contact_via: null, owner_note: null, note: 'Быстро согласовывает, можно звать на эфиры.', examples: [], client_id: null, created_at: day(60) },
+    { id: 3, name: 'Пётр Лаврентьев', position: 'Директор по маркетингу онлайн-сервиса', topics: ['Маркетинг и реклама'], phones: [], emails: [], telegram: null, contact_via: 'Через PR-менеджера Анну, @demo_pr', owner_note: 'Кирилл', note: 'Только через PR. Нужен список вопросов заранее.', examples: [], client_id: null, created_at: day(30) },
+  ];
+  const expert_uses = [
+    { id: 1, expert_id: 1, contact_id: anna.id, outlet: 'Ведомости', url: 'https://example.com/sleep-article', note: 'Комментарий про недосып у офисных сотрудников', used_at: day(12).slice(0, 10), created_by: profiles[0].id, created_at: day(12) },
+    { id: 2, expert_id: 2, contact_id: null, outlet: 'РБК', url: null, note: 'Отдали на комментарий по ставке', used_at: day(40).slice(0, 10), created_by: profiles[1] ? profiles[1].id : profiles[0].id, created_at: day(40) },
+  ];
   return {
+    experts, expert_uses,
     outlet_stats, contact_pubs,
     events, event_guests,
     clients, mailing_lists, mailing_members, mailing_sends: [], notifications, verify_tasks: [],
     profiles, outlets, contacts, campaigns, campaign_items: items, notes,
     favorites: [anna.id].concat(people.filter((_, i) => i % 11 === 0).map(c => c.id)),
-    dictionaries, settings: { collision_days: 7, schema_version: '2.0.4', stats_last_run: { at: day(1), ok: 6, failed: 1, skipped: 0, by: { telegram: 4, youtube: 2 } }, pubs_last_run: { at: day(4), checked: 120, found: 37 } }, audit_log: []
+    dictionaries, settings: { collision_days: 7, schema_version: '2.0.5', stats_last_run: { at: day(1), ok: 6, failed: 1, skipped: 0, by: { telegram: 4, youtube: 2 } }, pubs_last_run: { at: day(4), checked: 120, found: 37 } }, audit_log: []
   };
 };

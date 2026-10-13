@@ -23,10 +23,10 @@
 
   // ====================== хранилище ======================
   const S = reactive({
-    mode: api.mode, booting: true, tick: Date.now(), stage2: false, stage3: false, stage4: false, clientId: null, listId: null, eventId: null, reportCampaignId: null, reportClientId: null, user: null, me: null, loadingPct: 0, loadError: '',
+    mode: api.mode, booting: true, tick: Date.now(), stage2: false, stage3: false, stage4: false, stage5: false, clientId: null, listId: null, eventId: null, reportCampaignId: null, reportClientId: null, user: null, me: null, loadingPct: 0, loadError: '',
     view: 'map', campaignId: null, drawer: null, modal: null, toast: '', rev: 0,
   });
-  const D = { outlets: [], contacts: [], campaigns: [], items: [], profiles: [], favorites: new Set(), dict: { topic: [], tag: [] }, settings: { collision_days: 7 }, moves: [], ignores: [], clients: [], lists: [], members: [], sends: [], notifs: [], tasks: [], events: [], guests: [] };
+  const D = { outlets: [], contacts: [], campaigns: [], items: [], profiles: [], favorites: new Set(), dict: { topic: [], tag: [] }, settings: { collision_days: 7 }, moves: [], ignores: [], clients: [], lists: [], members: [], sends: [], notifs: [], tasks: [], events: [], guests: [], experts: [], uses: [] };
   let IX = {};
   const bump = () => { S.rev++; };
 
@@ -86,8 +86,13 @@
       if (!respByContact.has(it.contact_id)) respByContact.set(it.contact_id, newResp());
       addResp(respByContact.get(it.contact_id), it);
     }
+    const expertById = new Map(D.experts.map(e => [e.id, e])), usesByExpert = new Map(), usesByContact = new Map();
+    for (const u of D.uses.slice().sort((a, b) => (b.used_at || '').localeCompare(a.used_at || ''))) {
+      if (!usesByExpert.has(u.expert_id)) usesByExpert.set(u.expert_id, []); usesByExpert.get(u.expert_id).push(u);
+      if (u.contact_id) { if (!usesByContact.has(u.contact_id)) usesByContact.set(u.contact_id, []); usesByContact.get(u.contact_id).push(u); }
+    }
     IX = { outletById, contactById, byOutlet, orphan, itemsByContact, itemsByCampaign, lastPitch, lastPitchOutlet, profileById, movesByContact, movedFromOutlet, clientById, membersByList, sendsByContact,
-      guestsByContact, guestsByEvent, respByContact };
+      guestsByContact, guestsByEvent, respByContact, expertById, usesByExpert, usesByContact };
   }
   const ix = () => (S.rev, IX);
   // отзывчивость: сколько питчей получил и на сколько отреагировал
@@ -250,13 +255,14 @@
       S.stage2 = !!r.stage2; S.stage3 = !!r.stage3;
       S.stage4 = String((r.settings || {}).schema_version || '') >= '2.0.4';
       D.events = markRaw(r.events || []); D.guests = markRaw(r.guests || []);
+      S.stage5 = !!r.stage5; D.experts = markRaw(r.experts || []); D.uses = markRaw(r.uses || []);
       D.clients = markRaw(r.clients || []); D.lists = markRaw(r.lists || []); D.members = markRaw(r.members || []);
       D.sends = markRaw(r.sends || []); D.notifs = markRaw(r.notifs || []); D.tasks = markRaw(r.tasks || []);
       { const cids = new Set(D.contacts.map(c => c.id)), kids = new Set(D.campaigns.map(c => c.id)); D.items = markRaw(D.items.filter(i => cids.has(i.contact_id) && kids.has(i.campaign_id))); }
       S.me = r.me; applyTheme(S.me.theme);
       rebuildIndex(); bump();
       if (S.view === 'map' && !D.contacts.length && isAdmin()) S.view = 'admin';
-      S.needsUpdate = r.needsUpdate || (S.stage3 && !S.stage4 ? 'update-2.0-stage4.sql' : '');
+      S.needsUpdate = r.needsUpdate || (S.stage3 && !S.stage4 ? 'update-2.0-stage4.sql' : S.stage4 && !S.stage5 ? 'update-2.0-stage5.sql' : '');
       if (isAdmin() && !r.needsUpdate) api.purgeTrash().catch(() => {});
     } catch (e) { console.error(e); S.loadError = e.message || String(e); }
   }
@@ -353,6 +359,7 @@
   const helpers = {
     methods: {
       fmtDate, fmtShort, agoText, initials, pname, safeUrl, tgUrl, birthdayText, copy, openContact, openOutlet, go,
+      openExpert(id) { S.modal = { kind: 'expert', id }; },
       relLabel: r => REL[r] || REL.neutral, statusLabel: s => STATUS[s] || s, channelLabel: c => CHANNEL[c] || '—',
       outletName(id) { const o = ix().outletById.get(id); return o ? o.name : 'Без издания'; },
       outletOf(c) { return ix().outletById.get(c.outlet_id); },
@@ -402,7 +409,7 @@
       counts() {
         S.rev; const mine = D.tasks.filter(t => S.me && t.user_id === S.me.id);
         return { outlets: D.outlets.length, pool: D.favorites.size, camps: D.campaigns.filter(c => !c.archived).length, clients: D.clients.filter(c => !c.archived).length, lists: D.lists.length,
-          verify: mine.length ? mine.filter(t => !t.result).length || '✓' : '', events: D.events.filter(e => !e.archived && (!e.event_at || new Date(e.event_at) > Date.now() - 864e5)).length || '' };
+          verify: mine.length ? mine.filter(t => !t.result).length || '✓' : '', events: D.events.filter(e => !e.archived && (!e.event_at || new Date(e.event_at) > Date.now() - 864e5)).length || '', experts: D.experts.length || '' };
       },
     },
     template: `
@@ -418,6 +425,7 @@
     <a :class="{active: s.view==='verify'}" @click="go('verify')">Актуализация <span class="count">{{ counts.verify }}</span></a>
   </template>
   <a v-if="s.stage3" :class="{active: s.view==='events' || s.view==='event'}" @click="go('events')">Мероприятия <span class="count">{{ counts.events }}</span></a>
+  <a v-if="s.stage5" :class="{active: s.view==='experts'}" @click="go('experts')">Эксперты <span class="count">{{ counts.experts }}</span></a>
   <a :class="{active: s.view==='analytics'}" @click="go('analytics')">Аналитика</a>
   <a :class="{active: s.view==='settings'}" @click="go('settings')">Настройки</a>
   <template v-if="isAdmin()">
@@ -673,6 +681,7 @@
       tagOptions() { S.rev; return D.dict.tag; },
       career() { S.rev; return ix().movesByContact.get(this.id) || []; },
       mailings() { S.rev; return (ix().sendsByContact.get(this.id) || []).slice().sort((a, b) => b.sent_at.localeCompare(a.sent_at)); },
+      expertUses() { S.rev; return (ix().usesByContact.get(this.id) || []).map(u => ({ u, e: ix().expertById.get(u.expert_id) })).filter(x => x.e); },
       resp() { S.rev; return ix().respByContact.get(this.id); },
       respB() { return respBadge(this.resp); },
       evs() {
@@ -845,6 +854,13 @@
     <div v-if="!notes.length" class="muted small">Заметок нет.</div>
   </section>
 
+  <section v-if="expertUses.length">
+    <h3 class="section-title">Давали экспертов</h3>
+    <div v-for="x in expertUses" :key="x.u.id" class="note" style="cursor:pointer" @click="openExpert(x.e.id)">
+      <div><b>{{ x.e.name }}</b> <span class="meta">{{ fmtDate(x.u.used_at) }} · {{ pname(x.u.created_by) }}</span></div>
+      <div class="small muted">{{ x.u.note || x.u.outlet || '' }}</div>
+    </div>
+  </section>
   <section v-if="pubs.length">
     <h3 class="section-title">Свежие материалы <span class="muted small" style="font-weight:400">· нашлись автоматически</span></h3>
     <div v-for="p in pubs" :key="p.id" class="note">
@@ -1907,8 +1923,8 @@
     computed: {
       rows() {
         if (!this.data) return [];
-        const L = { outlets: 'Издание', contacts: 'Контакт', campaigns: 'Инфоповод', clients: 'Клиент', mailing_lists: 'Рассылка', events: 'Мероприятие' };
-        return ['contacts', 'outlets', 'campaigns', 'clients', 'mailing_lists', 'events'].flatMap(t => (this.data[t] || []).map(r => ({ t, label: L[t], r, name: r.name || r.title, left: 30 - daysAgo(r.deleted_at) })))
+        const L = { outlets: 'Издание', contacts: 'Контакт', campaigns: 'Инфоповод', clients: 'Клиент', mailing_lists: 'Рассылка', events: 'Мероприятие', experts: 'Эксперт' };
+        return ['contacts', 'outlets', 'campaigns', 'clients', 'mailing_lists', 'events', 'experts'].flatMap(t => (this.data[t] || []).map(r => ({ t, label: L[t], r, name: r.name || r.title, left: 30 - daysAgo(r.deleted_at) })))
           .sort((a, b) => b.r.deleted_at.localeCompare(a.r.deleted_at));
       },
     },
@@ -2806,6 +2822,293 @@
 <div v-else class="empty">Мероприятие не найдено. <a href="#" @click.prevent="go('events')">К списку</a></div>`,
   };
 
+  // ====================== 2.0 · ЭКСПЕРТЫ ======================
+  // Разбор свободной строки «Контакты»: телеграм, телефоны, почты, остальное — «как связаться»
+  function parseExpertContacts(raw) {
+    let t = String(raw || '');
+    const emails = [...new Set((t.match(/[\w.+-]+@[\w-]+(\.[\w-]+)+/g) || []).map(e => e.toLowerCase()))];
+    emails.forEach(e => { t = t.replace(new RegExp(e.replace(/[.+]/g, '\\$&'), 'ig'), ' '); });
+    const tgs = []; t = t.replace(/(^|[\s(,;:])@([A-Za-z][A-Za-z0-9_]{3,})/g, (m, a, h) => { tgs.push('@' + h); return a + ' '; });
+    t = t.replace(/(?:https?:\/\/)?t\.me\/([A-Za-z][A-Za-z0-9_]{3,})/g, (m, h) => { tgs.push('@' + h); return ' '; });
+    const phones = [];
+    t = t.replace(/(?:\+?\d[\d\s()\-–]{8,}\d)(\s*(?:#|доб\.?)\s*\d+)?/g, m => { const d = m.replace(/\D/g, ''); if (d.length >= 10 && d.length <= 15) { phones.push(m.trim().replace(/\s+/g, ' ')); return ' '; } return m; });
+    let rest = t.replace(/(моб|раб|тел|телефон|tg|тг|почта|e-?mail)\.?\s*:?/gi, ' ').replace(/[\s/|,;:"]+/g, ' ').trim();
+    if (rest.length < 4) rest = '';
+    return { telegram: tgs[0] || null, phones: [...new Set(phones)], emails, via: rest || null, extraTg: tgs.slice(1) };
+  }
+  const expertContactLine = e => e.telegram || (e.phones || [])[0] || (e.emails || [])[0] || e.contact_via || '';
+
+  const ExpertsView = {
+    mixins: [helpers], components: { Ic },
+    data: () => ({ q: '', topic: '', limit: 100 }),
+    computed: {
+      topics() { S.rev; return [...new Set(D.experts.flatMap(e => e.topics || []))].sort((a, b) => a.localeCompare(b, 'ru')); },
+      list() {
+        S.rev; const words = norm(this.q).split(/\s+/).filter(Boolean);
+        return D.experts.filter(e => {
+          if (this.topic && !(e.topics || []).includes(this.topic)) return false;
+          if (!words.length) return true;
+          const hay = norm([e.name, e.position, e.note, e.owner_note, e.contact_via, (e.topics || []).join(' '), e.telegram, (e.emails || []).join(' ')].join(' '));
+          return words.every(w => hay.includes(w));
+        }).map(e => { const us = ix().usesByExpert.get(e.id) || []; return { e, n: us.length, last: us[0] }; })
+          .sort((a, b) => a.e.name.localeCompare(b.e.name, 'ru'));
+      },
+      admin: () => isAdmin(),
+    },
+    methods: {
+      create() { S.modal = { kind: 'expertForm', id: null }; },
+      imp() { S.modal = { kind: 'expertImport' }; },
+      contactLine: expertContactLine,
+      async exportX() {
+        await exportXlsx('Эксперты.xlsx', [['Эксперты', this.list.map(x => ({ 'ФИО': x.e.name, 'Специализация': x.e.position || '', 'Тематики': (x.e.topics || []).join(', '), 'Телеграм': x.e.telegram || '',
+          'Телефоны': (x.e.phones || []).join(', '), 'Почта': (x.e.emails || []).join(', '), 'Как связаться': x.e.contact_via || '', 'Чей контакт': x.e.owner_note || '', 'Нюансы': x.e.note || '',
+          'Примеры': (x.e.examples || []).join('\n'), 'Использовали раз': x.n, 'Последний раз': x.last ? fmtDate(x.last.used_at) + ' · ' + (x.last.outlet || '') : '' }))]]);
+      },
+    },
+    template: `
+<div>
+  <div class="page-head"><div><h1>Эксперты</h1><div class="muted small" style="margin-top:6px">Спикеры для комментариев: кто по какой теме, как связаться, какие нюансы и где он уже выходил</div></div>
+    <div class="row wrap"><button v-if="admin" class="btn" @click="imp"><Ic n="down"/> Импорт из Excel</button><button class="btn" @click="exportX"><Ic n="down"/> Excel</button><button class="btn primary" @click="create"><Ic n="plus"/> Эксперт</button></div></div>
+  <div class="row wrap" style="margin-bottom:12px">
+    <div class="search grow" style="min-width:260px"><Ic n="search"/><input v-model="q" placeholder="Тема, имя, должность, нюанс — например «сомнолог» или «энергетика»" aria-label="Поиск экспертов"></div>
+    <select v-if="topics.length" class="fselect" :class="{set: topic}" v-model="topic" aria-label="Тематика"><option value="">Тематика</option><option v-for="t in topics" :key="t" :value="t">{{ t }}</option></select>
+  </div>
+  <div v-if="!list.length" class="empty">{{ q || topic ? 'Никого не нашли. Попробуйте другое слово.' : 'Экспертов пока нет.' }} <a v-if="!q && !topic" href="#" @click.prevent="create">Добавить первого</a></div>
+  <div v-else class="card scroll-x" style="padding:0"><table class="tbl" style="min-width:960px">
+    <thead><tr><th style="width:34%">Эксперт</th><th>Как связаться</th><th>Нюансы</th><th style="width:150px">Давали</th></tr></thead>
+    <tbody><tr v-for="x in list.slice(0, limit)" :key="x.e.id" style="cursor:pointer" @click="openExpert(x.e.id)">
+      <td><b>{{ x.e.name }}</b><div class="small muted clamp2">{{ x.e.position || '—' }}</div>
+        <div v-if="(x.e.topics||[]).length" style="margin-top:4px"><span v-for="t in x.e.topics" :key="t" class="chip" style="font-size:11px">{{ t }}</span></div></td>
+      <td class="small">{{ contactLine(x.e) || '—' }}<div v-if="x.e.owner_note" class="muted">чей: {{ x.e.owner_note }}</div></td>
+      <td class="small"><div class="clamp2" style="color:var(--text-2)">{{ x.e.note || '' }}</div></td>
+      <td class="small"><template v-if="x.n"><b>{{ x.n }}</b> {{ plural(x.n, 'раз', 'раза', 'раз') }}<div class="muted">{{ fmtDate(x.last.used_at) }}{{ x.last.outlet ? ' · ' + x.last.outlet : '' }}</div></template><span v-else class="muted">ещё нет</span></td>
+    </tr></tbody></table>
+    <div v-if="list.length > limit" style="padding:12px"><button class="btn sm" @click="limit += 200">Показать ещё {{ list.length - limit }}</button></div>
+  </div>
+</div>`,
+  };
+  ExpertsView.methods.plural = plural;
+
+  const ExpertCard = {
+    mixins: [helpers], components: { Ic }, props: { m: Object },
+    data: () => ({ add: false, u: { outlet: '', contact: '', url: '', note: '', used_at: new Date().toISOString().slice(0, 10) }, busy: false }),
+    computed: {
+      e() { S.rev; return ix().expertById.get(this.m.id); },
+      uses() { S.rev; return (ix().usesByExpert.get(this.m.id) || []).map(u => ({ u, c: u.contact_id ? ix().contactById.get(u.contact_id) : null })); },
+      client() { S.rev; return this.e && this.e.client_id ? ix().clientById.get(this.e.client_id) : null; },
+      outletNames() { S.rev; return D.outlets.filter(o => o.type === 'СМИ' || o.tier).map(o => o.name).slice(0, 3000); },
+      outletMatch() { S.rev; const n = norm(this.u.outlet.trim()); return n ? D.outlets.find(o => norm(o.name) === n) : null; },
+      people() { S.rev; return this.outletMatch ? (ix().byOutlet.get(this.outletMatch.id) || []).filter(c => !c.is_desk).sort((a, b) => a.name.localeCompare(b.name, 'ru')) : []; },
+      warn() {
+        const n = norm(this.u.outlet.trim()); if (!n) return null;
+        const hit = (ix().usesByExpert.get(this.m.id) || []).find(u => norm(u.outlet) === n && daysAgo(u.used_at) <= 90);
+        return hit ? 'Этого эксперта уже давали в «' + hit.outlet + '» ' + fmtDate(hit.used_at) + ' (' + pname(hit.created_by) + '). Повтор в том же СМИ может не зайти.' : null;
+      },
+      canDel() { return isAdmin() || (this.e && this.e.created_by === (S.me || {}).id); },
+    },
+    methods: {
+      close() { S.modal = null; },
+      edit() { S.modal = { kind: 'expertForm', id: this.e.id }; },
+      async del() {
+        if (!confirm('Убрать эксперта «' + this.e.name + '» в корзину?')) return;
+        await safe(() => api.softDelete('experts', this.e.id), 'Эксперт в корзине');
+        D.experts = markRaw(D.experts.filter(x => x.id !== this.e.id)); rebuildIndex(); bump(); S.modal = null;
+      },
+      async saveUse() {
+        if (!this.u.outlet.trim() && !this.u.note.trim() && !this.u.url.trim()) { toast('Укажите хотя бы издание или что давали'); return; }
+        this.busy = true;
+        try {
+          const row = await api.insert('expert_uses', { expert_id: this.e.id, outlet: this.u.outlet.trim() || null, contact_id: this.u.contact ? +this.u.contact : null,
+            url: safeUrl(this.u.url.trim()) || null, note: this.u.note.trim() || null, used_at: this.u.used_at || null });
+          D.uses = markRaw(D.uses.concat([row])); rebuildIndex(); bump();
+          this.add = false; this.u = { outlet: '', contact: '', url: '', note: '', used_at: new Date().toISOString().slice(0, 10) }; toast('Записали');
+        } catch (e) { toast('Ошибка: ' + e.message); } finally { this.busy = false; }
+      },
+      async delUse(x) {
+        if (!confirm('Удалить эту запись?')) return;
+        await safe(() => api.remove('expert_uses', x.u.id)); D.uses = markRaw(D.uses.filter(u => u.id !== x.u.id)); rebuildIndex(); bump();
+      },
+      canDelUse(x) { return isAdmin() || x.u.created_by === (S.me || {}).id; },
+      tg(h) { return tgUrl(h); },
+    },
+    template: `
+<div class="modal-back" @click.self="close"><div class="modal" style="max-width:720px" v-if="e">
+  <div class="row" style="align-items:flex-start"><div class="grow"><h3 style="margin:0">{{ e.name }}</h3><div class="muted" style="margin-top:4px; white-space:pre-line">{{ e.position || '' }}</div></div>
+    <button class="btn sm" @click="edit"><Ic n="edit"/> Изменить</button><button v-if="canDel" class="btn ghost sm" style="color:var(--danger)" aria-label="В корзину" @click="del"><Ic n="trash"/></button>
+    <button class="icon-btn" aria-label="Закрыть" @click="close"><Ic n="close"/></button></div>
+  <div v-if="(e.topics||[]).length"><span v-for="t in e.topics" :key="t" class="chip">{{ t }}</span></div>
+  <div class="kv">
+    <template v-if="e.telegram"><span class="k">Телеграм</span><span class="v"><a :href="tg(e.telegram)" target="_blank" rel="noopener">{{ e.telegram }}</a> <a href="#" class="small muted" @click.prevent="copy(e.telegram)">копировать</a></span></template>
+    <template v-if="(e.phones||[]).length"><span class="k">Телефон</span><span class="v"><template v-for="(p,i) in e.phones" :key="p">{{ i ? ', ' : '' }}<a :href="'tel:' + p.replace(/[^\\d+]/g,'')">{{ p }}</a></template></span></template>
+    <template v-if="(e.emails||[]).length"><span class="k">Почта</span><span class="v"><template v-for="(m,i) in e.emails" :key="m">{{ i ? ', ' : '' }}<a :href="'mailto:' + m">{{ m }}</a></template> <a href="#" class="small muted" @click.prevent="copy(e.emails.join(', '))">копировать</a></span></template>
+    <template v-if="e.contact_via"><span class="k">Как связаться</span><span class="v">{{ e.contact_via }}</span></template>
+    <template v-if="e.owner_note"><span class="k">Чей контакт</span><span class="v">{{ e.owner_note }}</span></template>
+    <template v-if="client"><span class="k">Клиент</span><span class="v"><a href="#" @click.prevent="close(); go('client', {clientId: client.id})">{{ client.name }}</a></span></template>
+    <span class="k">Добавил(а)</span><span class="v">{{ pname(e.created_by) }} · {{ fmtDate(e.created_at) }}</span>
+  </div>
+  <div v-if="e.note" class="comment-box" style="white-space:pre-line">{{ e.note }}</div>
+  <div v-if="(e.examples||[]).length"><div class="section-title">Примеры выходов</div>
+    <div v-for="u in e.examples" :key="u" class="small ellipsis"><a :href="safeUrl(u)" target="_blank" rel="noopener">{{ u }}</a></div></div>
+  <div>
+    <div class="row"><div class="section-title grow" style="margin:0">Где и кому давали · {{ uses.length }}</div><button v-if="!add" class="btn sm" @click="add = true"><Ic n="plus"/> Записать</button></div>
+    <form v-if="add" class="stack" style="gap:8px; margin-top:8px" @submit.prevent="saveUse">
+      <div class="grid2">
+        <label class="field"><span>Издание</span><input class="input" v-model="u.outlet" list="mk-exp-outlets" placeholder="Например: РБК"></label>
+        <datalist id="mk-exp-outlets"><option v-for="n in outletNames" :key="n" :value="n"></option></datalist>
+        <label class="field"><span>Журналист</span><select class="select" v-model="u.contact" :disabled="!people.length"><option value="">{{ people.length ? 'не указан' : 'сначала выберите издание из базы' }}</option><option v-for="c in people" :key="c.id" :value="c.id">{{ c.name }}</option></select></label>
+      </div>
+      <div class="grid2">
+        <label class="field"><span>Ссылка на материал</span><input class="input" v-model="u.url" placeholder="если уже вышел"></label>
+        <label class="field"><span>Когда</span><input class="input" type="date" v-model="u.used_at"></label>
+      </div>
+      <label class="field"><span>Что давали</span><input class="input" v-model="u.note" placeholder="комментарий про…, эфир, колонка"></label>
+      <div v-if="warn" class="banner">{{ warn }}</div>
+      <div class="row"><span class="grow"></span><button type="button" class="btn ghost sm" @click="add = false">Отмена</button><button class="btn primary sm" :disabled="busy">Сохранить</button></div>
+    </form>
+    <div v-for="x in uses" :key="x.u.id" class="note row">
+      <div class="grow"><div><b>{{ x.u.outlet || 'издание не указано' }}</b><template v-if="x.c"> · <a href="#" @click.prevent="close(); openContact(x.c.id)">{{ x.c.name }}</a></template></div>
+        <div class="meta">{{ fmtDate(x.u.used_at) }} · {{ pname(x.u.created_by) }}<template v-if="x.u.note"> · {{ x.u.note }}</template></div>
+        <a v-if="x.u.url" class="small" :href="safeUrl(x.u.url)" target="_blank" rel="noopener">материал ↗</a></div>
+      <button v-if="canDelUse(x)" class="icon-btn" style="width:24px;height:24px" aria-label="Удалить запись" @click="delUse(x)"><Ic n="trash" :s="13"/></button>
+    </div>
+    <div v-if="!uses.length && !add" class="muted small" style="margin-top:6px">Пока не записывали. Когда отдадите эксперта журналисту, нажмите «Записать» — так коллеги увидят, кому и когда его уже давали.</div>
+  </div>
+</div></div>`,
+  };
+
+  const ExpertForm = {
+    mixins: [helpers], props: { m: Object },
+    data() {
+      const e = this.m.id ? D.experts.find(x => x.id === this.m.id) : null;
+      const cl = e && e.client_id ? D.clients.find(c => c.id === e.client_id) : null;
+      return {
+        f: { name: e ? e.name : '', position: e ? e.position || '' : '', topics: e ? (e.topics || []).slice() : [], telegram: e ? e.telegram || '' : '', phones: e ? (e.phones || []).join(', ') : '',
+          emails: e ? (e.emails || []).join(', ') : '', contact_via: e ? e.contact_via || '' : '', owner_note: e ? e.owner_note || '' : '', client: cl ? cl.name : '', note: e ? e.note || '' : '', examples: e ? (e.examples || []).join('\n') : '' },
+        clients: D.clients.map(c => c.name), busy: false, err: '',
+      };
+    },
+    computed: { topicsAll() { S.rev; return D.dict.topic; } },
+    methods: {
+      close() { S.modal = this.m.id ? { kind: 'expert', id: this.m.id } : null; },
+      tog(t) { const i = this.f.topics.indexOf(t); i >= 0 ? this.f.topics.splice(i, 1) : this.f.topics.push(t); },
+      async save() {
+        if (!this.f.name.trim()) { this.err = 'Укажите имя'; return; }
+        this.busy = true;
+        try {
+          let cl = this.f.client.trim() ? D.clients.find(c => norm(c.name) === norm(this.f.client.trim())) : null;
+          if (this.f.client.trim() && !cl) { cl = await api.insert('clients', { name: this.f.client.trim() }); D.clients.push(cl); }
+          let tg = this.f.telegram.trim().replace(/^https?:\/\/t\.me\//i, ''); if (tg && !tg.startsWith('@')) tg = '@' + tg;
+          const patch = { name: this.f.name.trim(), position: this.f.position.trim() || null, topics: this.f.topics, telegram: tg || null, phones: splitList(this.f.phones),
+            emails: splitList(this.f.emails).map(x => x.toLowerCase()), contact_via: this.f.contact_via.trim() || null, owner_note: this.f.owner_note.trim() || null,
+            client_id: cl ? cl.id : null, note: this.f.note.trim() || null, examples: this.f.examples.split(/\s+/).map(x => x.trim()).filter(x => /^https?:\/\/|^[\w-]+\.[\w.]+\//.test(x)) };
+          let row;
+          if (this.m.id) { row = await api.update('experts', this.m.id, patch); Object.assign(D.experts.find(x => x.id === row.id), row); }
+          else {
+            const dup = D.experts.find(x => norm(x.name) === norm(patch.name));
+            if (dup && !confirm('Эксперт «' + dup.name + '» уже есть в базе. Всё равно добавить?')) { this.busy = false; return; }
+            row = await api.insert('experts', patch); D.experts.push(row);
+          }
+          rebuildIndex(); bump(); S.modal = { kind: 'expert', id: row.id };
+        } catch (e) { this.err = e.message; } finally { this.busy = false; }
+      },
+    },
+    template: `
+<div class="modal-back" @click.self="close"><form class="modal" style="max-width:680px" @submit.prevent="save">
+  <h3>{{ m.id ? 'Эксперт' : 'Новый эксперт' }}</h3>
+  <label class="field"><span>Имя *</span><input class="input" v-model="f.name" required></label>
+  <label class="field"><span>Специализация, должность, регалии</span><textarea class="textarea" style="min-height:64px" v-model="f.position" placeholder="Врач-сомнолог, д.м.н., руководитель центра…"></textarea></label>
+  <div class="field"><span>Тематики</span><div><span v-for="t in topicsAll" :key="t" class="chip x" :class="{on: f.topics.includes(t)}" @click="tog(t)">{{ t }}</span></div></div>
+  <div class="grid2">
+    <label class="field"><span>Телеграм</span><input class="input" v-model="f.telegram" placeholder="@username"></label>
+    <label class="field"><span>Телефоны</span><input class="input" v-model="f.phones" placeholder="через запятую"></label>
+  </div>
+  <div class="grid2">
+    <label class="field"><span>Почта</span><input class="input" v-model="f.emails" placeholder="через запятую"></label>
+    <label class="field"><span>Как связаться иначе</span><input class="input" v-model="f.contact_via" placeholder="через PR-службу, пресс-секретаря…"></label>
+  </div>
+  <div class="grid2">
+    <label class="field"><span>Чей контакт</span><input class="input" v-model="f.owner_note" placeholder="проект, менеджер"></label>
+    <label class="field"><span>Спикер клиента</span><input class="input" v-model="f.client" list="mk-clients5" placeholder="если эксперт от клиента"></label>
+    <datalist id="mk-clients5"><option v-for="n in clients" :key="n" :value="n"></option></datalist>
+  </div>
+  <label class="field"><span>Нюансы общения</span><textarea class="textarea" v-model="f.note" placeholder="как лучше писать, сколько согласовывает, что любит и не любит"></textarea></label>
+  <label class="field"><span>Примеры выходов (ссылки, по одной в строке)</span><textarea class="textarea" style="min-height:64px" v-model="f.examples"></textarea></label>
+  <div v-if="err" class="banner">{{ err }}</div>
+  <div class="foot"><button type="button" class="btn ghost" @click="close">Отмена</button><button class="btn primary" :disabled="busy">Сохранить</button></div>
+</form></div>`,
+  };
+
+  // Импорт таблицы экспертов: ищем колонки по заголовкам
+  function expertRowsFromSheet(rows) {
+    let hi = rows.findIndex(r => r.some(v => /фио|имя/i.test(String(v || ''))));
+    if (hi < 0) return { rows: [], error: 'Не нашли строку заголовков с колонкой «ФИО»' };
+    const head = rows[hi].map(v => String(v || '').toLowerCase());
+    const col = re => head.findIndex(h => re.test(h));
+    const C = { name: col(/фио|^имя/), position: col(/специализ|должност|регали/), contacts: col(/^контакт|контакты/), owner: col(/чей|менеджер|проект/), note: col(/коммент|нюанс/), ex: col(/пример|ссылк/) };
+    if (C.name < 0) return { rows: [], error: 'Не нашли колонку «ФИО»' };
+    const cell = (r, i) => i < 0 ? '' : String(r[i] == null ? '' : r[i]).trim();
+    const out = [];
+    for (const r of rows.slice(hi + 1)) {
+      const name = cell(r, C.name).replace(/\s*\n\s*/g, ' ').replace(/\s{2,}/g, ' ').replace(/[,\s]+$/, '');
+      if (!name) continue;
+      const pc = parseExpertContacts(cell(r, C.contacts));
+      const exRaw = cell(r, C.ex);
+      const links = (exRaw.match(/https?:\/\/\S+/g) || []).map(u => u.replace(/[),.;]+$/, ''));
+      const exText = exRaw.replace(/https?:\/\/\S+/g, ' ').replace(/\s+/g, ' ').trim();
+      let note = cell(r, C.note).replace(/\s*\n\s*/g, '\n').trim();
+      if (exText) note = (note ? note + '\n' : '') + exText;
+      if (pc.extraTg.length) pc.via = [pc.via, 'ещё: ' + pc.extraTg.join(', ')].filter(Boolean).join('; ');
+      out.push({ name, position: cell(r, C.position).replace(/\s*\n\s*/g, '\n').replace(/\n{2,}/g, '\n').trim() || null, topics: [],
+        telegram: pc.telegram, phones: pc.phones, emails: pc.emails, contact_via: pc.via, owner_note: cell(r, C.owner) || null, note: note || null, examples: links });
+    }
+    return { rows: out };
+  }
+  window.MK_EXPERTS = { parse: expertRowsFromSheet, contacts: parseExpertContacts };
+
+  const ExpertImport = {
+    mixins: [helpers], props: { m: Object },
+    data: () => ({ parsed: null, err: '', busy: false, skipDup: true }),
+    computed: {
+      dups() { if (!this.parsed) return 0; const have = new Set(D.experts.map(e => norm(e.name))); return this.parsed.filter(r => have.has(norm(r.name))).length; },
+      toLoad() { if (!this.parsed) return []; const have = new Set(D.experts.map(e => norm(e.name))); return this.skipDup ? this.parsed.filter(r => !have.has(norm(r.name))) : this.parsed; },
+    },
+    methods: {
+      close() { S.modal = null; },
+      async file(ev) {
+        const f = ev.target.files[0]; if (!f) return;
+        this.err = ''; this.parsed = null;
+        try {
+          await loadXlsx();
+          const wb = XLSX.read(await f.arrayBuffer(), { type: 'array' });
+          const all = [];
+          for (const n of wb.SheetNames) { const r = expertRowsFromSheet(XLSX.utils.sheet_to_json(wb.Sheets[n], { header: 1, defval: '' })); if (r.error && !all.length) this.err = r.error; all.push(...r.rows); }
+          if (all.length) this.err = '';
+          this.parsed = all;
+        } catch (e) { this.err = e.message; }
+      },
+      async load() {
+        this.busy = true;
+        try { const rows = await api.insertRows('experts', this.toLoad); D.experts = markRaw(D.experts.concat(rows)); rebuildIndex(); bump(); toast('Загружено экспертов: ' + rows.length); S.modal = null; }
+        catch (e) { this.err = e.message; } finally { this.busy = false; }
+      },
+    },
+    template: `
+<div class="modal-back" @click.self="close"><div class="modal" style="max-width:760px">
+  <h3>Импорт экспертов из Excel</h3>
+  <div class="muted small">Нужны колонки с заголовками: «ФИО», «Специализация», «Контакты», «Чей контакт», «Комментарии / Нюансы», «Пример работы». Телеграм, телефоны и почты из колонки «Контакты» разберём сами.</div>
+  <input type="file" accept=".xlsx,.xls,.csv" @change="file" aria-label="Файл Excel">
+  <div v-if="err" class="banner">{{ err }}</div>
+  <template v-if="parsed">
+    <div><b>Нашли {{ parsed.length }}</b><template v-if="dups"> · уже в базе: {{ dups }} <label class="small" style="margin-left:8px"><input type="checkbox" v-model="skipDup"> пропустить их</label></template></div>
+    <div class="scroll-x" style="max-height:320px; overflow:auto"><table class="tbl small">
+      <thead><tr><th>Имя</th><th>Телеграм</th><th>Телефоны</th><th>Почта</th><th>Как связаться</th></tr></thead>
+      <tbody><tr v-for="(r,i) in toLoad.slice(0, 80)" :key="i"><td><b>{{ r.name }}</b><div class="muted clamp2">{{ r.position }}</div></td><td>{{ r.telegram || '' }}</td><td>{{ r.phones.join(', ') }}</td><td>{{ r.emails.join(', ') }}</td><td>{{ r.contact_via || '' }}</td></tr></tbody>
+    </table></div>
+  </template>
+  <div class="foot"><button class="btn ghost" @click="close">Отмена</button><button class="btn primary" :disabled="!toLoad.length || busy" @click="load">Загрузить {{ toLoad.length || '' }}</button></div>
+</div></div>`,
+  };
+
   // ====================== 2.0 · СТАТИСТИКА ПЛОЩАДОК (админ) ======================
   const StatsAdmin = {
     mixins: [helpers], components: { Ic },
@@ -2984,7 +3287,7 @@
   // ====================== КОРЕНЬ ======================
   const Root = {
     components: { Login, Nav, MapView, ContactDrawer, OutletDrawer, ContactForm, OutletForm, CampaignForm, AddToCampaign, Picker, CampaignsView, CampaignView, PoolView, DashView, SettingsView, AdminView, MoveModal, BulkEdit,
-      ClientsView, ClientView, MailingsView, MailingView, ListForm, AddToList, VerifyView, ReportView, AnalyticsView, EventsView, EventView, EventForm, AddToEvent },
+      ClientsView, ClientView, MailingsView, MailingView, ListForm, AddToList, VerifyView, ReportView, AnalyticsView, EventsView, EventView, EventForm, AddToEvent, ExpertsView, ExpertCard, ExpertForm, ExpertImport },
     computed: { s: () => S },
     mounted() {
       boot();
@@ -3055,6 +3358,7 @@
     <AnalyticsView v-else-if="s.view==='analytics'" />
     <EventsView v-else-if="s.view==='events'" />
     <EventView v-else-if="s.view==='event'" :key="'ev' + s.eventId" />
+    <ExpertsView v-else-if="s.view==='experts'" />
   </main>
   <div class="drawer-wrap" v-if="s.drawer">
     <ContactDrawer v-if="s.drawer.kind==='contact'" :id="s.drawer.id" :key="'c' + s.drawer.id" />
@@ -3071,6 +3375,9 @@
   <AddToList v-if="s.modal && s.modal.kind==='addToList'" :m="s.modal" />
   <EventForm v-if="s.modal && s.modal.kind==='eventForm'" :m="s.modal" />
   <AddToEvent v-if="s.modal && s.modal.kind==='addToEvent'" :m="s.modal" />
+  <ExpertCard v-if="s.modal && s.modal.kind==='expert'" :m="s.modal" :key="'ex' + s.modal.id" />
+  <ExpertForm v-if="s.modal && s.modal.kind==='expertForm'" :m="s.modal" />
+  <ExpertImport v-if="s.modal && s.modal.kind==='expertImport'" :m="s.modal" />
 </div>
 <div v-if="s.toast" class="toast" role="status">{{ s.toast }}</div>`,
   };

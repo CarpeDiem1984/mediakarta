@@ -460,3 +460,7 @@ mark { background: var(--accent-soft); color: inherit; border-radius: 2px; paddi
   .rep-kpis > div { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .rep-bar-t, .rep-bar-t i { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 }
+
+/* ---------- 2.0 · эксперты ---------- */
+.clamp2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; white-space: normal; }
+.modal .kv { grid-template-columns: 120px minmax(0, 1fr); }

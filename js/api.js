@@ -52,12 +52,19 @@
       onAuth(cb) { sb.auth.onAuthStateChange((ev, s) => cb(ev, s ? s.user : null)); },
 
       async loadAll(progress) {
-        try { const r = await this.loadAllV2(progress, true); await this.loadStage2(r); if (r.stage2) await this.loadStage3(r); return r; }
+        try { const r = await this.loadAllV2(progress, true); await this.loadStage2(r); if (r.stage2) await this.loadStage3(r); if (r.stage3 && String((r.settings || {}).schema_version || '') >= '2.0.5') await this.loadStage5(r); return r; }
         catch (e) {
           // база ещё не обновлена до 2.0 — работаем в прежнем режиме и просим админа применить обновление
           if (!/deleted_at|contact_moves|dup_ignores|does not exist|schema cache/i.test(e.message)) throw e;
           const r = await this.loadAllV2(progress, false); r.needsUpdate = 'update-2.0-stage1.sql'; return r;
         }
+      },
+      async loadStage5(r) {
+        const [experts, uses] = await Promise.all([
+          fetchAll('experts', '*', 'id', null, q => q.is('deleted_at', null)),
+          fetchAll('expert_uses', '*'),
+        ]);
+        Object.assign(r, { experts, uses, stage5: true });
       },
       async loadStage3(r) {
         try {
@@ -146,8 +153,8 @@
       async trash() {
         const q = t => sb.from(t).select('*').not('deleted_at', 'is', null).order('deleted_at', { ascending: false }).limit(500).then(must);
         const soft = t => q(t).catch(() => []);
-        const [outlets, contacts, campaigns, clients, mailing_lists, events] = await Promise.all([q('outlets'), q('contacts'), q('campaigns'), soft('clients'), soft('mailing_lists'), soft('events')]);
-        return { outlets, contacts, campaigns, clients, mailing_lists, events };
+        const [outlets, contacts, campaigns, clients, mailing_lists, events, experts] = await Promise.all([q('outlets'), q('contacts'), q('campaigns'), soft('clients'), soft('mailing_lists'), soft('events'), soft('experts')]);
+        return { outlets, contacts, campaigns, clients, mailing_lists, events, experts };
       },
       async purgeTrash() { return must(await sb.rpc('purge_trash')); },
       async moveContact(id, to, role) { must(await sb.rpc('move_contact', { p_contact: id, p_to: to, p_role: role || null })); },
@@ -175,6 +182,7 @@
       async outletStats(outletId) { return must(await sb.from('outlet_stats').select('*').eq('outlet_id', outletId).order('at', { ascending: false }).limit(30)); },
       async contactPubs(cid) { return must(await sb.from('contact_pubs').select('*').eq('contact_id', cid).eq('hidden', false).order('published_at', { ascending: false }).limit(10)); },
       async hidePub(id) { must(await sb.from('contact_pubs').update({ hidden: true }).eq('id', id)); },
+      async insertRows(table, rows) { const out = []; for (let i = 0; i < rows.length; i += 200) out.push(...must(await sb.from(table).insert(rows.slice(i, i + 200)).select())); return out; },
       async recentPubs(n) { return must(await sb.from('contact_pubs').select('*').eq('hidden', false).not('published_at', 'is', null).order('published_at', { ascending: false }).limit(n || 60)); },
       async settings() { return Object.fromEntries(must(await sb.from('app_settings').select('*')).map(s => [s.key, s.value])); },
     };
@@ -189,8 +197,8 @@
     const clone = x => JSON.parse(JSON.stringify(x));
     const me = db.profiles[0];
     let logged = false;
-    const tables = { outlets: 1, contacts: 1, campaigns: 1, campaign_items: 1, notes: 1, clients: 1, mailing_lists: 1, mailing_sends: 1, notifications: 1, verify_tasks: 1, events: 1, event_guests: 1 };
-    for (const k of ['clients', 'mailing_lists', 'mailing_members', 'mailing_sends', 'notifications', 'verify_tasks', 'events', 'event_guests', 'outlet_stats', 'contact_pubs']) db[k] = db[k] || [];
+    const tables = { outlets: 1, contacts: 1, campaigns: 1, campaign_items: 1, notes: 1, clients: 1, mailing_lists: 1, mailing_sends: 1, notifications: 1, verify_tasks: 1, events: 1, event_guests: 1, experts: 1, expert_uses: 1 };
+    for (const k of ['clients', 'mailing_lists', 'mailing_members', 'mailing_sends', 'notifications', 'verify_tasks', 'events', 'event_guests', 'outlet_stats', 'contact_pubs', 'experts', 'expert_uses']) db[k] = db[k] || [];
     for (const k of Object.keys(tables)) seq[k] = db[k].reduce((m, r) => Math.max(m, r.id || 0), 0);
     db.contact_moves = db.contact_moves || []; db.dup_ignores = db.dup_ignores || []; seq.contact_moves = 0;
     const auditLog = (table, id, action, diff) => db.audit_log.push({ id: ++seq.audit_log, table_name: table, row_id: id, action, changed_by: me.id, changed_at: now(), diff });
@@ -207,7 +215,7 @@
         progress && progress(100);
         const alive = a => clone(a.filter(r => !r.deleted_at));
         return {
-          stage2: true, stage3: true, events: alive(db.events), guests: clone(db.event_guests), clients: alive(db.clients), lists: alive(db.mailing_lists), members: clone(db.mailing_members), sends: clone(db.mailing_sends),
+          stage2: true, stage3: true, stage5: true, experts: alive(db.experts), uses: clone(db.expert_uses), events: alive(db.events), guests: clone(db.event_guests), clients: alive(db.clients), lists: alive(db.mailing_lists), members: clone(db.mailing_members), sends: clone(db.mailing_sends),
           notifs: clone(db.notifications.filter(n => n.user_id === me.id).reverse()), tasks: clone(db.verify_tasks.filter(x => x.week_start === weekStart())),
           moves: clone(db.contact_moves), ignores: clone(db.dup_ignores),
           outlets: alive(db.outlets), contacts: alive(db.contacts), campaigns: alive(db.campaigns),
@@ -220,7 +228,8 @@
         const r = Object.assign({}, row, { id: ++seq[table], created_at: now() });
         if (table === 'notes') r.author = me.id;
         if (['outlets', 'contacts', 'campaign_items'].includes(table)) { r.updated_at = now(); r.created_by = me.id; }
-        if (['campaigns', 'clients', 'mailing_lists', 'mailing_sends'].includes(table)) r.created_by = r.created_by || me.id;
+        if (['campaigns', 'clients', 'mailing_lists', 'mailing_sends', 'experts', 'expert_uses', 'events'].includes(table)) r.created_by = r.created_by || me.id;
+        if (table === 'expert_uses' && !r.used_at) r.used_at = now().slice(0, 10);
         if (table === 'mailing_sends') r.sent_at = now();
         db[table].push(r);
         if (table === 'contacts' || table === 'outlets') auditLog(table, r.id, 'insert', null);
@@ -291,7 +300,7 @@
       async restore(table, id) { return this.update(table, id, { deleted_at: null, deleted_by: null }); },
       async trash() {
         const q = t => clone(db[t].filter(r => r.deleted_at).sort((a, b) => b.deleted_at.localeCompare(a.deleted_at)));
-        return { outlets: q('outlets'), contacts: q('contacts'), campaigns: q('campaigns'), clients: q('clients'), mailing_lists: q('mailing_lists'), events: q('events') };
+        return { outlets: q('outlets'), contacts: q('contacts'), campaigns: q('campaigns'), clients: q('clients'), mailing_lists: q('mailing_lists'), events: q('events'), experts: q('experts') };
       },
       async purgeTrash() {
         const old = r => r.deleted_at && Date.now() - new Date(r.deleted_at) > 30 * 864e5;
@@ -383,6 +392,7 @@
       async outletStats(outletId) { return clone(db.outlet_stats.filter(s => s.outlet_id === outletId).reverse()); },
       async contactPubs(cid) { return clone(db.contact_pubs.filter(p => p.contact_id === cid && !p.hidden)); },
       async hidePub(id) { const p = db.contact_pubs.find(x => x.id === id); if (p) p.hidden = true; },
+      async insertRows(table, rows) { const out = []; for (const r of rows) out.push(await this.insert(table, r)); return out; },
       async recentPubs(n) { return clone(db.contact_pubs.filter(p => !p.hidden && p.published_at).sort((a, b) => b.published_at.localeCompare(a.published_at)).slice(0, n || 60)); },
       async settings() { return clone(db.settings); },
     };
