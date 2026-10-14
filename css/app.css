@@ -464,3 +464,7 @@ mark { background: var(--accent-soft); color: inherit; border-radius: 2px; paddi
 /* ---------- 2.0 · эксперты ---------- */
 .clamp2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; white-space: normal; }
 .modal .kv { grid-template-columns: 120px minmax(0, 1fr); }
+/* волны приглашений */
+.select.prio.p1 { background-color: color-mix(in srgb, var(--accent) 14%, var(--surface)); font-weight: 600; }
+.select.prio.p2 { background-color: color-mix(in srgb, var(--accent) 6%, var(--surface)); }
+.select.prio.p3 { color: var(--muted); }

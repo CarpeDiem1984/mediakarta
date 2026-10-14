@@ -158,7 +158,7 @@ window.MK_DEMO_DATA = function () {
   ];
   const gst = ['invited', 'confirmed', 'declined', 'planned'], gst2 = ['attended', 'attended', 'no_show', 'declined'];
   const event_guests = [];
-  people.slice(0, 10).forEach((c, k) => event_guests.push({ id: event_guests.length + 1, event_id: 1, contact_id: c.id, owner: 'u-masha', status: gst[k % 4], note: null, updated_at: day(1) }));
+  people.slice(0, 10).forEach((c, k) => event_guests.push({ id: event_guests.length + 1, event_id: 1, contact_id: c.id, owner: 'u-masha', status: gst[k % 4], priority: k < 4 ? 1 : k < 8 ? 2 : 3, note: null, updated_at: day(1) }));
   people.slice(3, 15).forEach((c, k) => event_guests.push({ id: event_guests.length + 1, event_id: 2, contact_id: c.id, owner: 'u-admin', status: gst2[k % 4], note: null, updated_at: day(50) }));
   // статистика площадок (этап 4)
   const plat = w => !w ? null : /t\.me|telegram/.test(w) ? 'telegram' : /youtube/.test(w) ? 'youtube' : /vk\.com/.test(w) ? 'vk' : /instagram/.test(w) ? 'instagram' : 'web';
@@ -192,6 +192,6 @@ window.MK_DEMO_DATA = function () {
     clients, mailing_lists, mailing_members, mailing_sends: [], notifications, verify_tasks: [],
     profiles, outlets, contacts, campaigns, campaign_items: items, notes,
     favorites: [anna.id].concat(people.filter((_, i) => i % 11 === 0).map(c => c.id)),
-    dictionaries, settings: { collision_days: 7, schema_version: '2.0.5', stats_last_run: { at: day(1), ok: 6, failed: 1, skipped: 0, by: { telegram: 4, youtube: 2 } }, pubs_last_run: { at: day(4), checked: 120, found: 37 } }, audit_log: []
+    dictionaries, settings: { collision_days: 7, schema_version: '2.0.6', stats_last_run: { at: day(1), ok: 6, failed: 1, skipped: 0, by: { telegram: 4, youtube: 2 } }, pubs_last_run: { at: day(4), checked: 120, found: 37 } }, audit_log: []
   };
 };
