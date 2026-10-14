@@ -468,3 +468,38 @@ mark { background: var(--accent-soft); color: inherit; border-radius: 2px; paddi
 .select.prio.p1 { background-color: color-mix(in srgb, var(--accent) 14%, var(--surface)); font-weight: 600; }
 .select.prio.p2 { background-color: color-mix(in srgb, var(--accent) 6%, var(--surface)); }
 .select.prio.p3 { color: var(--muted); }
+
+/* ---------- 2.0 · медиапланы ---------- */
+.h1-input { display: block; width: 100%; margin-top: 6px; font: inherit; font-size: 28px; font-weight: 700; letter-spacing: -.3px; border: 1px solid transparent; border-radius: 8px; padding: 2px 6px; margin-left: -7px; background: transparent; color: var(--text); }
+.h1-input:hover, .h1-input:focus { border-color: var(--line-strong, var(--line)); background: var(--surface); outline: none; }
+.mp-meta { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 10px; }
+.mp-settings { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 10px 14px; border: 1px dashed var(--line-strong, var(--line)); border-radius: 12px; margin-bottom: 14px; font-size: 13px; }
+.mp-settings label { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.mp-settings .input { width: 52px; height: 30px; padding: 0 6px; text-align: right; }
+.mp-wrap { overflow: auto; max-height: calc(100vh - 140px); }
+.mp-tbl { min-width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13px; }
+.mp-tbl th { position: sticky; top: 0; z-index: 3; background: var(--surface); white-space: nowrap; font-size: 11.5px; }
+.mp-tbl td, .mp-tbl th { padding: 5px 6px; vertical-align: top; border-bottom: 1px solid var(--line); }
+.mp-tbl .sticky0 { position: sticky; left: 0; z-index: 2; background: var(--surface); width: 30px; min-width: 30px; }
+.mp-tbl .sticky1 { position: sticky; left: 30px; z-index: 2; background: var(--surface); box-shadow: 1px 0 0 var(--line); }
+.mp-tbl th.sticky0, .mp-tbl th.sticky1 { z-index: 4; }
+.mp-tbl .num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; padding-top: 10px; }
+.mp-tbl .cell { width: 100%; font: inherit; font-size: 13px; color: var(--text); background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 4px 6px; resize: vertical; }
+.mp-tbl .cell:hover { border-color: var(--line); }
+.mp-tbl .cell:focus { border-color: var(--accent); background: var(--surface); outline: none; }
+.mp-tbl input.cell.w-n { text-align: right; font-variant-numeric: tabular-nums; }
+.w-name { min-width: 190px; } .w-s { min-width: 112px; } .w-m { min-width: 130px; } .w-xs { min-width: 40px; width: 44px !important; } .w-n { min-width: 104px; } .w-text { min-width: 230px; min-height: 30px; }
+.mp-tbl textarea.cell { height: 30px; } .mp-tbl textarea.cell:focus { height: 84px; }
+.mp-hist { font-size: 11px; color: var(--muted); padding: 0 6px; line-height: 1.3; }
+.mp-sec td { background: color-mix(in srgb, var(--accent) 7%, var(--surface)); }
+.mp-sec .icon-btn { width: 26px; height: 26px; }
+.mp-total td { background: var(--surface-2, var(--surface)); font-weight: 500; position: sticky; bottom: 0; z-index: 2; border-top: 2px solid var(--line-strong, var(--line)); }
+.mp-income, .f.mp-income b { color: #1a7f37; }
+[data-theme="console"] .mp-income, [data-theme="console"] .f.mp-income b { color: #3fb950; }
+.f.mp-over b { color: var(--danger); }
+.mp-declined td { color: var(--muted); } .mp-declined td > * { opacity: .55; } .mp-declined .cell.w-name { text-decoration: line-through; }
+.mp-sec td > div { position: sticky; left: 8px; width: max-content; min-width: min(900px, calc(100vw - 340px)); }
+.mp-tbl td.num:has(input) { padding-top: 5px; }
+.mp-service td { background: color-mix(in srgb, var(--text) 3%, var(--surface)); }
+.mp-client .cell { pointer-events: auto; }
+@media (max-width: 1100px) { .mp-meta { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

@@ -185,13 +185,27 @@ window.MK_DEMO_DATA = function () {
     { id: 1, expert_id: 1, contact_id: anna.id, outlet: 'Ведомости', url: 'https://example.com/sleep-article', note: 'Комментарий про недосып у офисных сотрудников', used_at: day(12).slice(0, 10), created_by: profiles[0].id, created_at: day(12) },
     { id: 2, expert_id: 2, contact_id: null, outlet: 'РБК', url: null, note: 'Отдали на комментарий по ставке', used_at: day(40).slice(0, 10), created_by: profiles[1] ? profiles[1].id : profiles[0].id, created_at: day(40) },
   ];
+  const media_plans = [{ id: 1, title: 'Медиаплан: запуск нового продукта', client_id: 1, period: 'ноябрь–декабрь', status: 'sent', budget: 2500000,
+    settings: { tax: 3, bank: 4, ak: 15, vat: 22, season: 0, barter_fee: 18000, merge: false }, sections: ['Запуск', 'Блогеры'], note: null, archived: false, created_by: 'u-masha', created_at: day(6), updated_at: day(1) }];
+  const mpr = (sort, section, o) => Object.assign({ plan_id: 1, sort, section, calc: 'full', status: 'idea', created_at: day(5), updated_at: day(2) }, o);
+  const media_plan_rows = [
+    mpr(1, 'Запуск', { id: 1, platform: 'СМИ', name: 'РБК', target: 'B2B / бизнес', tier: '1', format: 'Нативная статья', audience: 110000000, reach: 25000, client_price: 450000, cost_price: 390000, logistics: 0, reasoning: 'Главное деловое медиа: охват ЛПР и инвесторов', example: 'https://example.com/rbc-native', status: 'approved' }),
+    mpr(2, 'Запуск', { id: 2, platform: 'СМИ', name: 'vc.ru', target: 'IT / предприниматели', tier: '1', format: 'Обзор', audience: 9800000, reach: 15000, client_price: 180000, logistics: 5000, reasoning: 'Сильное комьюнити предпринимателей', status: 'booked' }),
+    mpr(3, 'Запуск', { id: 3, platform: 'СМИ', name: '3DNews', target: 'IT', tier: '1', format: 'Обзор с семплом', audience: 8100000, reach: 12000, calc: 'barter', logistics: 5000, comment: 'Бартер за семпл, оплачиваем только АК и доставку', status: 'published', pub_url: 'https://example.com/3dnews-review', fact_reach: 16400 }),
+    mpr(4, 'Запуск', { id: 4, platform: 'Telegram', name: 'Банкста', target: 'Финансы', tier: '1', format: 'Рекламный пост', audience: 280000, reach: 40000, client_price: 120000, cost_price: 100000, logistics: 0 }),
+    mpr(5, 'Запуск', { id: 5, calc: 'service', name: 'Пресс-релиз: копирайтинг и рассылка', format: 'от 10 публикаций', ak_fixed: 50000 }),
+    mpr(1, 'Блогеры', { id: 6, platform: 'YouTube', name: 'Дмитрий Тех', target: 'IT / гаджеты', format: 'Интеграция 60 сек', audience: 392000, reach: 80000, client_price: 150000, cost_price: 130000, logistics: 5000, reasoning: 'Подробные обзоры техники, лояльная аудитория' }),
+    mpr(2, 'Блогеры', { id: 7, platform: 'TikTok', name: 'Алина Корнеева', target: 'Lifestyle', format: 'Короткое видео', audience: 140000, reach: 30000, client_price: 40000, logistics: 5000, comment: 'Частичный бартер' }),
+    mpr(3, 'Блогеры', { id: 8, platform: 'Telegram', name: 'addmeto', target: 'IT', format: 'Пост', audience: 330000, reach: 45000, client_price: 90000, status: 'declined', internal_note: 'Нет слотов до января' }),
+  ];
   return {
+    media_plans, media_plan_rows,
     experts, expert_uses,
     outlet_stats, contact_pubs,
     events, event_guests,
     clients, mailing_lists, mailing_members, mailing_sends: [], notifications, verify_tasks: [],
     profiles, outlets, contacts, campaigns, campaign_items: items, notes,
     favorites: [anna.id].concat(people.filter((_, i) => i % 11 === 0).map(c => c.id)),
-    dictionaries, settings: { collision_days: 7, schema_version: '2.0.6', stats_last_run: { at: day(1), ok: 6, failed: 1, skipped: 0, by: { telegram: 4, youtube: 2 } }, pubs_last_run: { at: day(4), checked: 120, found: 37 } }, audit_log: []
+    dictionaries, settings: { collision_days: 7, schema_version: '2.0.7', stats_last_run: { at: day(1), ok: 6, failed: 1, skipped: 0, by: { telegram: 4, youtube: 2 } }, pubs_last_run: { at: day(4), checked: 120, found: 37 } }, audit_log: []
   };
 };

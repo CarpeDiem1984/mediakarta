@@ -52,12 +52,19 @@
       onAuth(cb) { sb.auth.onAuthStateChange((ev, s) => cb(ev, s ? s.user : null)); },
 
       async loadAll(progress) {
-        try { const r = await this.loadAllV2(progress, true); await this.loadStage2(r); if (r.stage2) await this.loadStage3(r); if (r.stage3 && String((r.settings || {}).schema_version || '') >= '2.0.5') await this.loadStage5(r); return r; }
+        try { const r = await this.loadAllV2(progress, true); await this.loadStage2(r); if (r.stage2) await this.loadStage3(r); if (r.stage3 && String((r.settings || {}).schema_version || '') >= '2.0.5') await this.loadStage5(r); if (String((r.settings || {}).schema_version || '') >= '2.0.7') await this.loadStage7(r); return r; }
         catch (e) {
           // база ещё не обновлена до 2.0 — работаем в прежнем режиме и просим админа применить обновление
           if (!/deleted_at|contact_moves|dup_ignores|does not exist|schema cache/i.test(e.message)) throw e;
           const r = await this.loadAllV2(progress, false); r.needsUpdate = 'update-2.0-stage1.sql'; return r;
         }
+      },
+      async loadStage7(r) {
+        const [mplans, mprows] = await Promise.all([
+          fetchAll('media_plans', '*', 'id', null, q => q.is('deleted_at', null)),
+          fetchAll('media_plan_rows', '*'),
+        ]);
+        Object.assign(r, { mplans, mprows, stage7: true });
       },
       async loadStage5(r) {
         const [experts, uses] = await Promise.all([
@@ -153,8 +160,8 @@
       async trash() {
         const q = t => sb.from(t).select('*').not('deleted_at', 'is', null).order('deleted_at', { ascending: false }).limit(500).then(must);
         const soft = t => q(t).catch(() => []);
-        const [outlets, contacts, campaigns, clients, mailing_lists, events, experts] = await Promise.all([q('outlets'), q('contacts'), q('campaigns'), soft('clients'), soft('mailing_lists'), soft('events'), soft('experts')]);
-        return { outlets, contacts, campaigns, clients, mailing_lists, events, experts };
+        const [outlets, contacts, campaigns, clients, mailing_lists, events, experts, media_plans] = await Promise.all([q('outlets'), q('contacts'), q('campaigns'), soft('clients'), soft('mailing_lists'), soft('events'), soft('experts'), soft('media_plans')]);
+        return { outlets, contacts, campaigns, clients, mailing_lists, events, experts, media_plans };
       },
       async purgeTrash() { return must(await sb.rpc('purge_trash')); },
       async moveContact(id, to, role) { must(await sb.rpc('move_contact', { p_contact: id, p_to: to, p_role: role || null })); },
@@ -197,8 +204,8 @@
     const clone = x => JSON.parse(JSON.stringify(x));
     const me = db.profiles[0];
     let logged = false;
-    const tables = { outlets: 1, contacts: 1, campaigns: 1, campaign_items: 1, notes: 1, clients: 1, mailing_lists: 1, mailing_sends: 1, notifications: 1, verify_tasks: 1, events: 1, event_guests: 1, experts: 1, expert_uses: 1 };
-    for (const k of ['clients', 'mailing_lists', 'mailing_members', 'mailing_sends', 'notifications', 'verify_tasks', 'events', 'event_guests', 'outlet_stats', 'contact_pubs', 'experts', 'expert_uses']) db[k] = db[k] || [];
+    const tables = { outlets: 1, contacts: 1, campaigns: 1, campaign_items: 1, notes: 1, clients: 1, mailing_lists: 1, mailing_sends: 1, notifications: 1, verify_tasks: 1, events: 1, event_guests: 1, experts: 1, expert_uses: 1, media_plans: 1, media_plan_rows: 1 };
+    for (const k of ['clients', 'mailing_lists', 'mailing_members', 'mailing_sends', 'notifications', 'verify_tasks', 'events', 'event_guests', 'outlet_stats', 'contact_pubs', 'experts', 'expert_uses', 'media_plans', 'media_plan_rows']) db[k] = db[k] || [];
     for (const k of Object.keys(tables)) seq[k] = db[k].reduce((m, r) => Math.max(m, r.id || 0), 0);
     db.contact_moves = db.contact_moves || []; db.dup_ignores = db.dup_ignores || []; seq.contact_moves = 0;
     const auditLog = (table, id, action, diff) => db.audit_log.push({ id: ++seq.audit_log, table_name: table, row_id: id, action, changed_by: me.id, changed_at: now(), diff });
@@ -215,7 +222,7 @@
         progress && progress(100);
         const alive = a => clone(a.filter(r => !r.deleted_at));
         return {
-          stage2: true, stage3: true, stage5: true, experts: alive(db.experts), uses: clone(db.expert_uses), events: alive(db.events), guests: clone(db.event_guests), clients: alive(db.clients), lists: alive(db.mailing_lists), members: clone(db.mailing_members), sends: clone(db.mailing_sends),
+          stage2: true, stage3: true, stage5: true, stage7: true, mplans: alive(db.media_plans), mprows: clone(db.media_plan_rows), experts: alive(db.experts), uses: clone(db.expert_uses), events: alive(db.events), guests: clone(db.event_guests), clients: alive(db.clients), lists: alive(db.mailing_lists), members: clone(db.mailing_members), sends: clone(db.mailing_sends),
           notifs: clone(db.notifications.filter(n => n.user_id === me.id).reverse()), tasks: clone(db.verify_tasks.filter(x => x.week_start === weekStart())),
           moves: clone(db.contact_moves), ignores: clone(db.dup_ignores),
           outlets: alive(db.outlets), contacts: alive(db.contacts), campaigns: alive(db.campaigns),
@@ -228,7 +235,9 @@
         const r = Object.assign({}, row, { id: ++seq[table], created_at: now() });
         if (table === 'notes') r.author = me.id;
         if (['outlets', 'contacts', 'campaign_items'].includes(table)) { r.updated_at = now(); r.created_by = me.id; }
-        if (['campaigns', 'clients', 'mailing_lists', 'mailing_sends', 'experts', 'expert_uses', 'events'].includes(table)) r.created_by = r.created_by || me.id;
+        if (['campaigns', 'clients', 'mailing_lists', 'mailing_sends', 'experts', 'expert_uses', 'events', 'media_plans', 'media_plan_rows'].includes(table)) r.created_by = r.created_by || me.id;
+        if (table === 'media_plan_rows') r.status = r.status || 'idea', r.calc = r.calc || 'full', r.sort = r.sort || 0;
+        if (table === 'media_plans') { r.status = r.status || 'draft'; r.sections = r.sections || []; r.settings = r.settings || { tax: 3, bank: 4, ak: 15, vat: 22, season: 0, barter_fee: 18000 }; r.updated_at = now(); }
         if (table === 'expert_uses' && !r.used_at) r.used_at = now().slice(0, 10);
         if (table === 'mailing_sends') r.sent_at = now();
         db[table].push(r);
@@ -300,7 +309,7 @@
       async restore(table, id) { return this.update(table, id, { deleted_at: null, deleted_by: null }); },
       async trash() {
         const q = t => clone(db[t].filter(r => r.deleted_at).sort((a, b) => b.deleted_at.localeCompare(a.deleted_at)));
-        return { outlets: q('outlets'), contacts: q('contacts'), campaigns: q('campaigns'), clients: q('clients'), mailing_lists: q('mailing_lists'), events: q('events'), experts: q('experts') };
+        return { outlets: q('outlets'), contacts: q('contacts'), campaigns: q('campaigns'), clients: q('clients'), mailing_lists: q('mailing_lists'), events: q('events'), experts: q('experts'), media_plans: q('media_plans') };
       },
       async purgeTrash() {
         const old = r => r.deleted_at && Date.now() - new Date(r.deleted_at) > 30 * 864e5;

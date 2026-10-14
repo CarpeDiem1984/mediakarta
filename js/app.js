@@ -24,10 +24,10 @@
 
   // ====================== хранилище ======================
   const S = reactive({
-    mode: api.mode, booting: true, tick: Date.now(), stage2: false, stage3: false, stage4: false, stage5: false, stage6: false, clientId: null, listId: null, eventId: null, reportCampaignId: null, reportClientId: null, user: null, me: null, loadingPct: 0, loadError: '',
+    mode: api.mode, booting: true, tick: Date.now(), stage2: false, stage3: false, stage4: false, stage5: false, stage6: false, stage7: false, mplanId: null, clientId: null, listId: null, eventId: null, reportCampaignId: null, reportClientId: null, user: null, me: null, loadingPct: 0, loadError: '',
     view: 'map', campaignId: null, drawer: null, modal: null, toast: '', rev: 0,
   });
-  const D = { outlets: [], contacts: [], campaigns: [], items: [], profiles: [], favorites: new Set(), dict: { topic: [], tag: [] }, settings: { collision_days: 7 }, moves: [], ignores: [], clients: [], lists: [], members: [], sends: [], notifs: [], tasks: [], events: [], guests: [], experts: [], uses: [] };
+  const D = { outlets: [], contacts: [], campaigns: [], items: [], profiles: [], favorites: new Set(), dict: { topic: [], tag: [] }, settings: { collision_days: 7 }, moves: [], ignores: [], clients: [], lists: [], members: [], sends: [], notifs: [], tasks: [], events: [], guests: [], experts: [], uses: [], mplans: [], mprows: [] };
   let IX = {};
   const bump = () => { S.rev++; };
 
@@ -87,13 +87,14 @@
       if (!respByContact.has(it.contact_id)) respByContact.set(it.contact_id, newResp());
       addResp(respByContact.get(it.contact_id), it);
     }
+    const mpRowsByPlan = new Map(); for (const r of D.mprows) { if (!mpRowsByPlan.has(r.plan_id)) mpRowsByPlan.set(r.plan_id, []); mpRowsByPlan.get(r.plan_id).push(r); }
     const expertById = new Map(D.experts.map(e => [e.id, e])), usesByExpert = new Map(), usesByContact = new Map();
     for (const u of D.uses.slice().sort((a, b) => (b.used_at || '').localeCompare(a.used_at || ''))) {
       if (!usesByExpert.has(u.expert_id)) usesByExpert.set(u.expert_id, []); usesByExpert.get(u.expert_id).push(u);
       if (u.contact_id) { if (!usesByContact.has(u.contact_id)) usesByContact.set(u.contact_id, []); usesByContact.get(u.contact_id).push(u); }
     }
     IX = { outletById, contactById, byOutlet, orphan, itemsByContact, itemsByCampaign, lastPitch, lastPitchOutlet, profileById, movesByContact, movedFromOutlet, clientById, membersByList, sendsByContact,
-      guestsByContact, guestsByEvent, respByContact, expertById, usesByExpert, usesByContact };
+      guestsByContact, guestsByEvent, respByContact, expertById, usesByExpert, usesByContact, mpRowsByPlan };
   }
   const ix = () => (S.rev, IX);
   // отзывчивость: сколько питчей получил и на сколько отреагировал
@@ -256,6 +257,7 @@
       S.stage2 = !!r.stage2; S.stage3 = !!r.stage3;
       S.stage4 = String((r.settings || {}).schema_version || '') >= '2.0.4';
       S.stage6 = String((r.settings || {}).schema_version || '') >= '2.0.6';
+      S.stage7 = !!r.stage7; D.mplans = markRaw(r.mplans || []); D.mprows = markRaw(r.mprows || []);
       D.events = markRaw(r.events || []); D.guests = markRaw(r.guests || []);
       S.stage5 = !!r.stage5; D.experts = markRaw(r.experts || []); D.uses = markRaw(r.uses || []);
       D.clients = markRaw(r.clients || []); D.lists = markRaw(r.lists || []); D.members = markRaw(r.members || []);
@@ -264,7 +266,7 @@
       S.me = r.me; applyTheme(S.me.theme);
       rebuildIndex(); bump();
       if (S.view === 'map' && !D.contacts.length && isAdmin()) S.view = 'admin';
-      S.needsUpdate = r.needsUpdate || (S.stage3 && !S.stage4 ? 'update-2.0-stage4.sql' : S.stage4 && !S.stage5 ? 'update-2.0-stage5.sql' : S.stage5 && !S.stage6 ? 'update-2.0-stage6.sql' : '');
+      S.needsUpdate = r.needsUpdate || (S.stage3 && !S.stage4 ? 'update-2.0-stage4.sql' : S.stage4 && !S.stage5 ? 'update-2.0-stage5.sql' : S.stage5 && !S.stage6 ? 'update-2.0-stage6.sql' : S.stage6 && !S.stage7 ? 'update-2.0-stage7.sql' : '');
       if (isAdmin() && !r.needsUpdate) api.purgeTrash().catch(() => {});
     } catch (e) { console.error(e); S.loadError = e.message || String(e); }
   }
@@ -414,7 +416,7 @@
       counts() {
         S.rev; const mine = D.tasks.filter(t => S.me && t.user_id === S.me.id);
         return { outlets: D.outlets.length, pool: D.favorites.size, camps: D.campaigns.filter(c => !c.archived).length, clients: D.clients.filter(c => !c.archived).length, lists: D.lists.length,
-          verify: mine.length ? mine.filter(t => !t.result).length || '✓' : '', events: D.events.filter(e => !e.archived && (!e.event_at || new Date(e.event_at) > Date.now() - 864e5)).length || '', experts: D.experts.length || '' };
+          verify: mine.length ? mine.filter(t => !t.result).length || '✓' : '', events: D.events.filter(e => !e.archived && (!e.event_at || new Date(e.event_at) > Date.now() - 864e5)).length || '', experts: D.experts.length || '', mplans: D.mplans.filter(p => !p.archived).length || '' };
       },
     },
     template: `
@@ -430,6 +432,7 @@
     <a :class="{active: s.view==='verify'}" @click="go('verify')">Актуализация <span class="count">{{ counts.verify }}</span></a>
   </template>
   <a v-if="s.stage3" :class="{active: s.view==='events' || s.view==='event'}" @click="go('events')">Мероприятия <span class="count">{{ counts.events }}</span></a>
+  <a v-if="s.stage7" :class="{active: s.view==='mplans' || s.view==='mplan'}" @click="go('mplans')">Медиапланы <span class="count">{{ counts.mplans }}</span></a>
   <a v-if="s.stage5" :class="{active: s.view==='experts'}" @click="go('experts')">Эксперты <span class="count">{{ counts.experts }}</span></a>
   <a :class="{active: s.view==='analytics'}" @click="go('analytics')">Аналитика</a>
   <a :class="{active: s.view==='settings'}" @click="go('settings')">Настройки</a>
@@ -1929,8 +1932,8 @@
     computed: {
       rows() {
         if (!this.data) return [];
-        const L = { outlets: 'Издание', contacts: 'Контакт', campaigns: 'Инфоповод', clients: 'Клиент', mailing_lists: 'Рассылка', events: 'Мероприятие', experts: 'Эксперт' };
-        return ['contacts', 'outlets', 'campaigns', 'clients', 'mailing_lists', 'events', 'experts'].flatMap(t => (this.data[t] || []).map(r => ({ t, label: L[t], r, name: r.name || r.title, left: 30 - daysAgo(r.deleted_at) })))
+        const L = { outlets: 'Издание', contacts: 'Контакт', campaigns: 'Инфоповод', clients: 'Клиент', mailing_lists: 'Рассылка', events: 'Мероприятие', experts: 'Эксперт', media_plans: 'Медиаплан' };
+        return ['contacts', 'outlets', 'campaigns', 'clients', 'mailing_lists', 'events', 'experts', 'media_plans'].flatMap(t => (this.data[t] || []).map(r => ({ t, label: L[t], r, name: r.name || r.title, left: 30 - daysAgo(r.deleted_at) })))
           .sort((a, b) => b.r.deleted_at.localeCompare(a.r.deleted_at));
       },
     },
@@ -2835,6 +2838,547 @@
 <div v-else class="empty">Мероприятие не найдено. <a href="#" @click.prevent="go('events')">К списку</a></div>`,
   };
 
+  // ====================== 2.0 · МЕДИАПЛАНЫ ======================
+  const MP_STATUS = { draft: 'черновик', sent: 'отправлен клиенту', approved: 'согласован', running: 'в работе', done: 'завершён' };
+  const MPR_STATUS = { idea: 'предложено', approved: 'согласовано', booked: 'забронировано', paid: 'оплачено', published: 'вышло', declined: 'отказ' };
+  const MPR_CLS = { approved: 'st-interest', booked: 'st-sent', paid: 'st-sent', published: 'st-published', declined: 'st-declined' };
+  const MP_CALC = { full: 'размещение', barter: 'бартер', service: 'услуга' };
+  const MP_DEFAULTS = { tax: 3, bank: 4, ak: 15, vat: 22, season: 0, barter_fee: 18000, merge: false };
+  const MP_PLATFORMS = ['СМИ', 'Telegram', 'YouTube', 'TikTok', 'VK', 'Дзен', 'Rutube', 'Instagram', 'Радио', 'ТВ', 'Подкаст', 'Другое'];
+  const num = v => { if (v === null || v === undefined || v === '') return null; if (typeof v === 'number') return isFinite(v) ? v : null; const s = String(v).replace(/\s| /g, '').replace(',', '.').replace(/[^\d.\-]/g, ''); if (!s || s === '-' || s === '.') return null; const n = parseFloat(s); return isFinite(n) ? n : null; };
+  const money = v => v === null || v === undefined || !isFinite(v) ? '—' : Math.round(v).toLocaleString('ru-RU');
+  const mpSettings = p => Object.assign({}, MP_DEFAULTS, (p && p.settings) || {});
+
+  // Расчёт строки: ровно как в табличке агентства
+  function mpCalc(r, s) {
+    const k = 1 + (+s.season || 0) / 100, vatK = (+s.vat || 0) / 100;
+    const out = { price: 0, cost: 0, tax: 0, bank: 0, ak: 0, log: num(r.logistics) || 0, net: 0, vat: 0, total: 0, income: 0, cpv: null, factCpv: null };
+    const cp = num(r.client_price), cs = num(r.cost_price);
+    if (r.calc === 'barter') {
+      out.ak = num(r.ak_fixed) ?? (+s.barter_fee || 0);
+      out.net = out.ak + out.log; out.income = out.ak;
+    } else if (r.calc === 'service') {
+      out.price = cp || 0; out.cost = cs ?? 0; out.ak = num(r.ak_fixed) || 0;
+      out.net = out.price + out.ak + out.log; out.income = out.ak + out.price - out.cost;
+    } else {
+      out.price = (cp || 0) * k; out.cost = (cs ?? cp ?? 0) * k;
+      out.tax = out.price * (+s.tax || 0) / 100; out.bank = out.price * (+s.bank || 0) / 100;
+      out.ak = num(r.ak_fixed) ?? out.price * (num(r.ak_pct) ?? (+s.ak || 0)) / 100;
+      out.net = out.price + out.tax + out.bank + out.ak + out.log;
+      out.income = out.ak + out.price - out.cost;
+    }
+    out.vat = out.net * vatK; out.total = out.net + out.vat;
+    const reach = num(r.reach);
+    if (reach && out.price) out.cpv = out.price / reach;
+    const fr = num(r.fact_reach); if (fr && (out.price || out.net)) out.factCpv = (out.price || out.net) / fr;
+    return out;
+  }
+  function mpSum(rows, s) {
+    const t = { price: 0, cost: 0, tax: 0, bank: 0, ak: 0, log: 0, net: 0, vat: 0, total: 0, income: 0, reach: 0, priceReach: 0, audience: 0, n: 0, published: 0, factReach: 0 };
+    for (const r of rows) {
+      if (r.status === 'declined') continue;
+      const c = mpCalc(r, s); t.n++;
+      for (const k of ['price', 'cost', 'tax', 'bank', 'ak', 'log', 'net', 'vat', 'total', 'income']) t[k] += c[k];
+      const re = num(r.reach); if (re) { t.reach += re; if (c.price) t.priceReach += c.price; }
+      t.audience += num(r.audience) || 0;
+      if (r.status === 'published') { t.published++; t.factReach += num(r.fact_reach) || 0; }
+    }
+    t.cpv = t.reach ? t.priceReach / t.reach : null;
+    return t;
+  }
+  const mpRowsOf = planId => (ix().mpRowsByPlan.get(planId) || []);
+  function mpSections(p) {
+    const rows = mpRowsOf(p.id); const order = (p.sections || []).slice();
+    for (const r of rows) { const s = r.section || ''; if (!order.includes(s)) order.push(s); }
+    if (!order.length) order.push('');
+    return order;
+  }
+
+  const MediaPlansView = {
+    mixins: [helpers], components: { Ic },
+    data: () => ({ q: '', arch: false }),
+    computed: {
+      list() {
+        S.rev; const q = norm(this.q);
+        return D.mplans.filter(p => !!p.archived === this.arch && (!q || norm(p.title + ' ' + ((ix().clientById.get(p.client_id) || {}).name || '')).includes(q)))
+          .sort((a, b) => (b.updated_at || b.created_at || '').localeCompare(a.updated_at || a.created_at || ''))
+          .map(p => ({ p, cl: ix().clientById.get(p.client_id), t: mpSum(mpRowsOf(p.id), mpSettings(p)) }));
+      },
+      statuses: () => MP_STATUS,
+    },
+    methods: {
+      money,
+      async create() {
+        const title = prompt('Название медиаплана', 'Медиаплан'); if (!title) return;
+        const row = await safe(() => api.insert('media_plans', { title: title.trim(), settings: MP_DEFAULTS, sections: ['Размещения'] }));
+        D.mplans.push(row); rebuildIndex(); bump(); go('mplan', { mplanId: row.id });
+      },
+      imp() { S.modal = { kind: 'mpImport' }; },
+    },
+    template: `
+<div>
+  <div class="page-head"><div><h1>Медиапланы</h1><div class="muted small" style="margin-top:6px">Платные размещения в СМИ, у блогеров и в новых медиа: всё считается само, клиентская и внутренняя версии, выгрузка в Excel</div></div>
+    <div class="row wrap"><button class="btn" @click="imp"><Ic n="down"/> Импорт из Excel</button><button class="btn primary" @click="create"><Ic n="plus"/> Медиаплан</button></div></div>
+  <div class="row wrap" style="margin-bottom:12px">
+    <div class="search grow" style="min-width:260px"><Ic n="search"/><input v-model="q" placeholder="Название или клиент" aria-label="Поиск медиапланов"></div>
+    <div class="seg"><button :class="{on: !arch}" @click="arch=false">Активные</button><button :class="{on: arch}" @click="arch=true">Архив</button></div>
+  </div>
+  <div v-if="!list.length" class="empty">{{ arch ? 'В архиве пусто' : 'Медиапланов пока нет.' }} <a v-if="!arch" href="#" @click.prevent="create">Создать первый</a> или загрузите готовый из Excel.</div>
+  <div class="stack">
+    <div v-for="x in list" :key="x.p.id" class="card row wrap" style="cursor:pointer; gap:18px" @click="go('mplan', {mplanId: x.p.id})">
+      <div class="grow" style="min-width:240px"><div class="h2" style="margin:0">{{ x.p.title }}</div>
+        <div class="small muted">{{ x.cl ? x.cl.name : 'без клиента' }}<template v-if="x.p.period"> · {{ x.p.period }}</template> · {{ statuses[x.p.status] }} · обновлён {{ fmtDate(x.p.updated_at || x.p.created_at) }}</div></div>
+      <div class="funnel" style="flex:2 1 460px">
+        <div class="f"><b>{{ x.t.n }}</b><span>позиций</span></div>
+        <div class="f"><b>{{ money(x.t.total) }}</b><span>итого с НДС, ₽</span></div>
+        <div class="f"><b>{{ money(x.t.income) }}</b><span>наш доход, ₽</span></div>
+        <div class="f"><b>{{ x.t.reach ? shortNum(x.t.reach) : '—' }}</b><span>охват, прогноз</span></div>
+      </div>
+    </div>
+  </div>
+</div>`,
+  };
+  MediaPlansView.methods.shortNum = shortNum;
+
+  const MediaPlanView = {
+    mixins: [helpers], components: { Ic },
+    data() {
+      let mode = 'internal'; try { mode = localStorage.getItem('mk-mp-mode') || 'internal'; } catch (e) {}
+      return { mode, showText: true, showDeclined: false, newSection: '', saving: 0 };
+    },
+    computed: {
+      p() { S.rev; return D.mplans.find(x => x.id === S.mplanId); },
+      s() { return mpSettings(this.p); },
+      cl() { S.rev; return this.p && this.p.client_id ? ix().clientById.get(this.p.client_id) : null; },
+      internal() { return this.mode === 'internal'; },
+      merge() { return !this.internal && this.s.merge; },
+      sections() {
+        S.rev; if (!this.p) return [];
+        const rows = mpRowsOf(this.p.id).filter(r => this.showDeclined || this.internal || r.status !== 'declined');
+        let n = 0;
+        return mpSections(this.p).map(name => {
+          const rs = rows.filter(r => (r.section || '') === name).sort((a, b) => a.sort - b.sort || a.id - b.id).map(r => ({ r, c: mpCalc(r, this.s), n: ++n, hist: this.internal ? this.history(r) : null }));
+          return { name, rows: rs, t: mpSum(rs.map(x => x.r), this.s) };
+        });
+      },
+      tot() { S.rev; return this.p ? mpSum(mpRowsOf(this.p.id), this.s) : {}; },
+      clients() { S.rev; return D.clients.map(c => c.name); },
+      outletNames() { S.rev; return D.outlets.map(o => o.name); },
+      statuses: () => MP_STATUS, rstatuses: () => MPR_STATUS, calcs: () => MP_CALC, platforms: () => MP_PLATFORMS,
+      cols() { return 13 + (this.internal ? 6 : 0) + (this.showText ? 3 : 0) + (this.merge ? -4 : 0); },
+      budgetLeft() { const b = num(this.p && this.p.budget); return b ? b - this.tot.total : null; },
+    },
+    watch: { mode(v) { try { localStorage.setItem('mk-mp-mode', v); } catch (e) {} } },
+    methods: {
+      money, num, rcls: st => MPR_CLS[st] || '',
+      fmtNum(v) { const n = num(v); return n === null ? '' : n.toLocaleString('ru-RU', { maximumFractionDigits: 2 }); },
+      history(r) {
+        const n = norm(r.name || '').replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '');
+        if (!n && !r.outlet_id) return null;
+        const prev = D.mprows.filter(x => x.id !== r.id && x.plan_id !== r.plan_id && num(x.client_price) && ((r.outlet_id && x.outlet_id === r.outlet_id) || (n.length > 2 && norm(x.name || '').replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '') === n)))
+          .sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''));
+        if (!prev.length) return null;
+        const x = prev[0], pl = D.mplans.find(p => p.id === x.plan_id);
+        return { row: x, text: 'ранее ' + money(num(x.client_price)) + (num(x.cost_price) ? ' / закуп. ' + money(num(x.cost_price)) : '') + (x.format ? ' · ' + x.format : '') + (pl ? ' · ' + pl.title : ''), more: prev.length - 1 };
+      },
+      async savePlan(patch) {
+        const row = await safe(() => api.update('media_plans', this.p.id, patch)); Object.assign(this.p, row); bump();
+      },
+      async setSetting(k, v) { const st = Object.assign({}, this.s, { [k]: typeof v === 'boolean' ? v : num(v) ?? 0 }); await this.savePlan({ settings: st }); },
+      async setClient(name) {
+        name = (name || '').trim(); let cl = null;
+        if (name) { cl = D.clients.find(c => norm(c.name) === norm(name)); if (!cl) { cl = await api.insert('clients', { name }); D.clients.push(cl); rebuildIndex(); } }
+        await this.savePlan({ client_id: cl ? cl.id : null });
+      },
+      async upd(r, field, raw) {
+        let v = raw;
+        if (['client_price', 'cost_price', 'ak_pct', 'ak_fixed', 'logistics', 'audience', 'reach', 'fact_reach'].includes(field)) {
+          if (field === 'client_price' && /бартер|barter/i.test(String(raw))) { return this.updMany(r, { calc: 'barter', client_price: null }); }
+          v = num(raw); if (['audience', 'reach', 'fact_reach'].includes(field) && v !== null) v = Math.round(v);
+        } else if (typeof v === 'string') v = v.trim() || null;
+        const patch = { [field]: v };
+        if (field === 'reach' && typeof raw === 'string' && /\d\s*[-–]\s*\d/.test(raw)) { patch.reach_text = raw.trim(); patch.reach = Math.round(num(raw.split(/[-–]/)[0])); }
+        else if (field === 'reach') patch.reach_text = null;
+        if (field === 'name') Object.assign(patch, this.fromOutlet(r, v));
+        return this.updMany(r, patch);
+      },
+      async updMany(r, patch) {
+        this.saving++;
+        try { const row = await api.update('media_plan_rows', r.id, patch); Object.assign(r, row); bump(); this.touch(); }
+        catch (e) { toast('Ошибка: ' + e.message); } finally { this.saving--; }
+      },
+      touch() { clearTimeout(this._t); this._t = setTimeout(() => api.update('media_plans', this.p.id, { updated_at: new Date().toISOString() }).then(row => { Object.assign(this.p, row); }).catch(() => {}), 1500); },
+      fromOutlet(r, name) {
+        const o = name ? D.outlets.find(x => norm(x.name) === norm(name)) : null; if (!o) return {};
+        const patch = { outlet_id: o.id };
+        const pl = o.platform === 'telegram' ? 'Telegram' : o.platform === 'youtube' ? 'YouTube' : o.platform === 'vk' ? 'VK' : o.platform === 'instagram' ? 'Instagram' : o.type === 'СМИ' || o.platform === 'web' ? 'СМИ' : null;
+        if (!r.platform && pl) patch.platform = pl;
+        if (!r.tier && o.tier) patch.tier = String(o.tier);
+        const aud = o.subscribers ?? o.visits; if (!num(r.audience) && aud) patch.audience = aud;
+        if (!r.target && (o.topics || []).length) patch.target = o.topics.slice(0, 2).join(', ');
+        return patch;
+      },
+      applyHist(r, h) { this.updMany(r, { client_price: h.row.client_price, cost_price: h.row.cost_price, format: r.format || h.row.format, calc: h.row.calc }); },
+      async addRow(section, calc) {
+        const rs = mpRowsOf(this.p.id).filter(r => (r.section || '') === section);
+        const row = await safe(() => api.insert('media_plan_rows', { plan_id: this.p.id, section: section || null, sort: rs.reduce((m, r) => Math.max(m, r.sort), 0) + 1, calc: calc || 'full', platform: calc === 'service' ? null : 'СМИ' }));
+        D.mprows.push(row); rebuildIndex(); bump(); this.touch();
+        this.$nextTick(() => { const el = document.querySelector('[data-row="' + row.id + '"] input'); el && el.focus(); });
+      },
+      async dupRow(r) {
+        const { id, created_at, updated_at, updated_by, created_by, ...rest } = r;
+        const row = await safe(() => api.insert('media_plan_rows', Object.assign(rest, { status: 'idea', pub_url: null, fact_reach: null })));
+        D.mprows.push(row); rebuildIndex(); bump();
+      },
+      async delRow(r) {
+        if (!confirm('Удалить строку «' + (r.name || 'без названия') + '»?')) return;
+        await safe(() => api.remove('media_plan_rows', r.id)); D.mprows = markRaw(D.mprows.filter(x => x.id !== r.id)); rebuildIndex(); bump(); this.touch();
+      },
+      async move(sec, i, dir) {
+        const rs = sec.rows.map(x => x.r); const j = i + dir; if (j < 0 || j >= rs.length) return;
+        [rs[i], rs[j]] = [rs[j], rs[i]];
+        for (let k = 0; k < rs.length; k++) if (rs[k].sort !== k + 1) { const row = await api.update('media_plan_rows', rs[k].id, { sort: k + 1 }); Object.assign(rs[k], row); }
+        bump();
+      },
+      async addSection() {
+        const n = this.newSection.trim(); if (!n) return;
+        const secs = mpSections(this.p).filter(Boolean); if (secs.includes(n)) { toast('Такой блок уже есть'); return; }
+        await this.savePlan({ sections: secs.concat([n]) }); this.newSection = ''; await this.addRow(n);
+      },
+      async renameSection(old) {
+        const n = (prompt('Название блока', old) || '').trim(); if (!n || n === old) return;
+        for (const r of mpRowsOf(this.p.id).filter(r => (r.section || '') === old)) { const row = await api.update('media_plan_rows', r.id, { section: n }); Object.assign(r, row); }
+        await this.savePlan({ sections: mpSections(this.p).map(s => s === old ? n : s).filter(Boolean) }); rebuildIndex(); bump();
+      },
+      async moveSection(name, dir) {
+        const secs = mpSections(this.p); const i = secs.indexOf(name), j = i + dir; if (j < 0 || j >= secs.length) return;
+        [secs[i], secs[j]] = [secs[j], secs[i]]; await this.savePlan({ sections: secs.filter(Boolean) });
+      },
+      async delSection(name) {
+        const rs = mpRowsOf(this.p.id).filter(r => (r.section || '') === name);
+        if (rs.length && !confirm('Удалить блок «' + (name || 'без названия') + '» вместе с ' + rs.length + ' строками?')) return;
+        for (const r of rs) await api.remove('media_plan_rows', r.id);
+        D.mprows = markRaw(D.mprows.filter(r => !rs.includes(r))); await this.savePlan({ sections: mpSections(this.p).filter(s => s && s !== name) }); rebuildIndex(); bump();
+      },
+      async copyPlan() {
+        const title = prompt('Название копии', this.p.title + ' (копия)'); if (!title) return;
+        const { id, created_at, updated_at, updated_by, created_by, deleted_at, deleted_by, ...rest } = this.p;
+        const np = await safe(() => api.insert('media_plans', Object.assign(rest, { title: title.trim(), status: 'draft', archived: false })));
+        const rows = mpRowsOf(this.p.id).map(r => { const { id, created_at, updated_at, updated_by, created_by, ...x } = r; return Object.assign(x, { plan_id: np.id, status: 'idea', pub_url: null, fact_reach: null }); });
+        const made = rows.length ? await api.insertRows('media_plan_rows', rows) : [];
+        D.mplans.push(np); D.mprows = markRaw(D.mprows.concat(made)); rebuildIndex(); bump(); go('mplan', { mplanId: np.id }); toast('Копия создана');
+      },
+      async del() {
+        if (!confirm('Убрать медиаплан «' + this.p.title + '» в корзину?')) return;
+        await safe(() => api.softDelete('media_plans', this.p.id), 'Медиаплан в корзине'); D.mplans = markRaw(D.mplans.filter(x => x.id !== this.p.id)); rebuildIndex(); bump(); go('mplans');
+      },
+      exportX() { mpExport(this.p, this.internal); },
+    },
+    template: `
+<div v-if="p" class="mp">
+  <div class="page-head">
+    <div class="grow"><a href="#" class="small" @click.prevent="go('mplans')">← Все медиапланы</a>
+      <input class="h1-input" :value="p.title" @change="savePlan({title: $event.target.value.trim() || p.title})" aria-label="Название медиаплана"></div>
+    <div class="row wrap">
+      <div class="seg"><button :class="{on: internal}" @click="mode='internal'">Внутренний</button><button :class="{on: !internal}" @click="mode='client'">Клиентский</button></div>
+      <button class="btn primary" @click="exportX"><Ic n="down"/> Excel{{ internal ? ' (внутр.)' : ' для клиента' }}</button>
+      <button class="btn" @click="copyPlan"><Ic n="copy"/> Копия</button>
+      <button class="btn ghost" @click="savePlan({archived: !p.archived})">{{ p.archived ? 'Из архива' : 'В архив' }}</button>
+      <button class="btn ghost" style="color:var(--danger)" aria-label="В корзину" @click="del"><Ic n="trash"/></button>
+    </div>
+  </div>
+
+  <div class="mp-meta">
+    <label class="field"><span>Клиент</span><input class="input" :value="cl ? cl.name : ''" list="mk-mp-clients" @change="setClient($event.target.value)"></label>
+    <datalist id="mk-mp-clients"><option v-for="n in clients" :key="n" :value="n"></option></datalist>
+    <label class="field"><span>Период</span><input class="input" :value="p.period" placeholder="сентябрь–октябрь" @change="savePlan({period: $event.target.value.trim() || null})"></label>
+    <label class="field"><span>Статус</span><select class="select" :value="p.status" @change="savePlan({status: $event.target.value})"><option v-for="(l,k) in statuses" :key="k" :value="k">{{ l }}</option></select></label>
+    <label class="field"><span>Бюджет клиента, ₽</span><input class="input" :value="fmtNum(p.budget)" placeholder="если известен" @change="savePlan({budget: num($event.target.value)})"></label>
+  </div>
+
+  <div class="mp-settings">
+    <span class="small muted">Расчёт:</span>
+    <label>Налог <input class="input" :value="s.tax" @change="setSetting('tax', $event.target.value)">%</label>
+    <label>Комиссия банка <input class="input" :value="s.bank" @change="setSetting('bank', $event.target.value)">%</label>
+    <label>Агентская комиссия <input class="input" :value="s.ak" @change="setSetting('ak', $event.target.value)">%</label>
+    <label>НДС <input class="input" :value="s.vat" @change="setSetting('vat', $event.target.value)">%</label>
+    <label>Сезонный коэф. <input class="input" :value="s.season" @change="setSetting('season', $event.target.value)">%</label>
+    <label>АК за бартер <input class="input" style="width:84px" :value="fmtNum(s.barter_fee)" @change="setSetting('barter_fee', $event.target.value)">₽</label>
+    <label v-if="!internal" class="small" title="Клиент видит одну цену, в которую уже включены налог, комиссия банка, АК и логистика"><input type="checkbox" :checked="s.merge" @change="setSetting('merge', $event.target.checked)"> клиенту одной ценой</label>
+  </div>
+
+  <div class="funnel" style="margin-bottom:14px">
+    <div class="f"><b>{{ money(tot.total) }}</b><span>итого с НДС, ₽</span></div>
+    <div class="f"><b>{{ money(tot.net) }}</b><span>без НДС, ₽</span></div>
+    <div class="f"><b>{{ tot.n }}</b><span>позиций</span></div>
+    <div class="f"><b>{{ tot.reach ? shortNum(tot.reach) : '—' }}</b><span>охват, прогноз</span></div>
+    <div class="f"><b>{{ tot.cpv ? tot.cpv.toFixed(1) : '—' }}</b><span>средний CPV, ₽</span></div>
+    <template v-if="internal">
+      <div class="f"><b>{{ money(tot.cost) }}</b><span>закупка, ₽</span></div>
+      <div class="f mp-income"><b>{{ money(tot.income) }}</b><span>наш доход · {{ tot.net ? Math.round(tot.income / tot.net * 100) : 0 }}%</span></div>
+    </template>
+    <div v-if="budgetLeft !== null" class="f" :class="{'mp-over': budgetLeft < 0}"><b>{{ money(Math.abs(budgetLeft)) }}</b><span>{{ budgetLeft < 0 ? 'перерасход бюджета' : 'остаток бюджета' }}</span></div>
+  </div>
+
+  <div class="row wrap" style="margin-bottom:8px">
+    <label class="small"><input type="checkbox" v-model="showText"> обоснование, пример, комментарий</label>
+    <label v-if="!internal" class="small"><input type="checkbox" v-model="showDeclined"> показывать отклонённые</label>
+    <span class="grow"></span><span class="small muted">{{ saving ? 'сохраняем…' : 'всё сохранено' }}</span>
+  </div>
+
+  <div class="card mp-wrap" style="padding:0">
+    <table class="tbl mp-tbl" :class="{'mp-client': !internal}">
+      <thead><tr>
+        <th class="sticky0">№</th><th class="sticky1">Media / KOL</th><th>Площадка</th><th>ЦА</th><th>Tier</th><th>Формат</th><th>Аудитория</th><th>Охват</th><th>CPV</th>
+        <th v-if="internal">Тип</th><th v-if="internal">Закупка</th>
+        <th>{{ merge ? 'Стоимость' : 'Цена площадки' }}</th>
+        <template v-if="!merge"><th>Налог {{ s.tax }}%</th><th>Банк {{ s.bank }}%</th><th>АК {{ s.ak }}%</th><th>Логистика</th></template>
+        <th>Итого с НДС</th>
+        <th v-if="internal">Наш доход</th><th v-if="internal">Статус</th>
+        <template v-if="showText"><th>Обоснование</th><th>Пример</th><th>Комментарий</th></template>
+        <th v-if="internal">Выход / факт</th><th v-if="internal">Заметка</th><th v-if="internal"></th>
+      </tr></thead>
+      <tbody v-for="(sec, si) in sections" :key="'s' + si">
+        <tr class="mp-sec"><td :colspan="cols + 2">
+          <div class="row"><b class="grow">{{ sec.name || 'Без блока' }} <span class="muted small" style="font-weight:400">· {{ sec.rows.length }} поз. · {{ money(sec.t.total) }} ₽ с НДС</span></b>
+            <template v-if="internal"><button class="btn ghost sm" @click="addRow(sec.name)"><Ic n="plus"/> размещение</button><button class="btn ghost sm" @click="addRow(sec.name, 'service')"><Ic n="plus"/> услуга</button>
+              <button class="icon-btn" title="Переименовать блок" @click="renameSection(sec.name)"><Ic n="edit" :s="14"/></button>
+              <button class="icon-btn" title="Выше" :disabled="si===0" @click="moveSection(sec.name, -1)">↑</button><button class="icon-btn" title="Ниже" :disabled="si===sections.length-1" @click="moveSection(sec.name, 1)">↓</button>
+              <button class="icon-btn" title="Удалить блок" @click="delSection(sec.name)"><Ic n="trash" :s="14"/></button></template></div></td></tr>
+        <tr v-for="(x, i) in sec.rows" :key="x.r.id" :data-row="x.r.id" :class="{'mp-declined': x.r.status==='declined', 'mp-service': x.r.calc==='service'}">
+          <td class="sticky0 mono small">{{ x.n }}</td>
+          <td class="sticky1"><input class="cell w-name" :value="x.r.name" list="mk-mp-outlets" placeholder="площадка или блогер" @change="upd(x.r, 'name', $event.target.value)" aria-label="Media / KOL">
+            <div v-if="x.hist" class="mp-hist"><a href="#" title="Подставить прошлые цены" @click.prevent="applyHist(x.r, x.hist)">{{ x.hist.text }}</a></div>
+            <div v-if="x.r.outlet_id && internal" class="mp-hist"><a href="#" @click.prevent="openOutlet(x.r.outlet_id)">в медиакарте ↗</a></div></td>
+          <td><input class="cell w-s" :value="x.r.platform" list="mk-mp-platforms" @change="upd(x.r, 'platform', $event.target.value)" aria-label="Площадка"></td>
+          <td><input class="cell w-m" :value="x.r.target" @change="upd(x.r, 'target', $event.target.value)" aria-label="ЦА"></td>
+          <td><input class="cell w-xs" :value="x.r.tier" @change="upd(x.r, 'tier', $event.target.value)" aria-label="Tier"></td>
+          <td><input class="cell w-m" :value="x.r.format" @change="upd(x.r, 'format', $event.target.value)" aria-label="Формат"></td>
+          <td><input class="cell w-n" :value="fmtNum(x.r.audience)" @change="upd(x.r, 'audience', $event.target.value)" aria-label="Аудитория"></td>
+          <td><input class="cell w-n" :value="x.r.reach_text || fmtNum(x.r.reach)" @change="upd(x.r, 'reach', $event.target.value)" aria-label="Охват"></td>
+          <td class="num">{{ x.c.cpv ? x.c.cpv.toFixed(1) : '—' }}</td>
+          <td v-if="internal"><select class="cell w-s" :value="x.r.calc" @change="updMany(x.r, {calc: $event.target.value})" aria-label="Тип строки"><option v-for="(l,k) in calcs" :key="k" :value="k">{{ l }}</option></select></td>
+          <td v-if="internal"><input v-if="x.r.calc!=='barter'" class="cell w-n" :value="fmtNum(x.r.cost_price)" :placeholder="fmtNum(x.r.client_price) || '—'" @change="upd(x.r, 'cost_price', $event.target.value)" aria-label="Закупочная цена"><span v-else class="muted">—</span></td>
+          <td v-if="merge" class="num"><b>{{ money(x.c.net) }}</b></td>
+          <td v-else><span v-if="x.r.calc==='barter'" class="chip" style="cursor:pointer" title="Вписать цену" @click="updMany(x.r, {calc: 'full'})">Бартер</span>
+            <input v-else class="cell w-n" :value="fmtNum(x.r.client_price)" :placeholder="x.r.calc==='service' ? '—' : 'цена или «бартер»'" @change="upd(x.r, 'client_price', $event.target.value)" aria-label="Цена площадки"></td>
+          <template v-if="!merge">
+            <td class="num">{{ x.r.calc==='full' ? money(x.c.tax) : '—' }}</td>
+            <td class="num">{{ x.r.calc==='full' ? money(x.c.bank) : '—' }}</td>
+            <td class="num"><input v-if="internal" class="cell w-n" :value="x.r.ak_fixed != null ? fmtNum(x.r.ak_fixed) : ''" :placeholder="money(x.c.ak)" :title="x.r.calc==='full' ? 'Пусто — считаем ' + (x.r.ak_pct ?? s.ak) + '%. Можно вписать сумму или «20%»' : 'Фиксированная АК'" @change="$event.target.value.includes('%') ? updMany(x.r, {ak_pct: num($event.target.value), ak_fixed: null}) : upd(x.r, 'ak_fixed', $event.target.value)" aria-label="Агентская комиссия"><template v-else>{{ money(x.c.ak) }}</template>
+              <div v-if="internal && x.r.ak_pct != null && x.r.ak_fixed == null" class="mp-hist">{{ x.r.ak_pct }}% <a href="#" @click.prevent="updMany(x.r, {ak_pct: null})">сброс</a></div></td>
+            <td><input class="cell w-n" :value="fmtNum(x.r.logistics)" @change="upd(x.r, 'logistics', $event.target.value)" aria-label="Логистика"></td>
+          </template>
+          <td class="num"><b>{{ money(x.c.total) }}</b></td>
+          <td v-if="internal" class="num mp-income">{{ money(x.c.income) }}</td>
+          <td v-if="internal"><select class="cell w-s" :class="rcls(x.r.status)" :value="x.r.status" @change="updMany(x.r, {status: $event.target.value})" aria-label="Статус"><option v-for="(l,k) in rstatuses" :key="k" :value="k">{{ l }}</option></select></td>
+          <template v-if="showText">
+            <td><textarea class="cell w-text" rows="1" :value="x.r.reasoning" @change="upd(x.r, 'reasoning', $event.target.value)" aria-label="Обоснование"></textarea></td>
+            <td><textarea class="cell w-text" rows="1" :value="x.r.example" @change="upd(x.r, 'example', $event.target.value)" aria-label="Пример"></textarea></td>
+            <td><textarea class="cell w-text" rows="1" :value="x.r.comment" @change="upd(x.r, 'comment', $event.target.value)" aria-label="Комментарий"></textarea></td>
+          </template>
+          <td v-if="internal"><div class="row" style="gap:4px; flex-wrap:nowrap"><input class="cell w-m" :value="x.r.pub_url" placeholder="ссылка на выход" @change="upd(x.r, 'pub_url', $event.target.value)" aria-label="Ссылка на выход"><a v-if="x.r.pub_url" :href="safeUrl(x.r.pub_url)" target="_blank" rel="noopener" title="Открыть">↗</a></div>
+            <div v-if="x.r.status==='published' || x.r.fact_reach" class="row" style="gap:4px; flex-wrap:nowrap"><input class="cell w-n" :value="fmtNum(x.r.fact_reach)" placeholder="факт. охват" @change="upd(x.r, 'fact_reach', $event.target.value)" aria-label="Фактический охват"><span v-if="x.c.factCpv" class="mp-hist nowrap">CPV {{ x.c.factCpv.toFixed(1) }}</span></div></td>
+          <td v-if="internal"><input class="cell w-m" :value="x.r.internal_note" placeholder="для своих" @change="upd(x.r, 'internal_note', $event.target.value)" aria-label="Внутренняя заметка"></td>
+          <td v-if="internal" class="nowrap"><button class="icon-btn" title="Выше" @click="move(sec, i, -1)">↑</button><button class="icon-btn" title="Ниже" @click="move(sec, i, 1)">↓</button>
+            <button class="icon-btn" title="Дублировать" @click="dupRow(x.r)"><Ic n="copy" :s="14"/></button><button class="icon-btn" title="Удалить" @click="delRow(x.r)"><Ic n="trash" :s="14"/></button></td>
+        </tr>
+        <tr v-if="!sec.rows.length"><td :colspan="cols + 2" class="muted small" style="padding:12px">Пусто. <a v-if="internal" href="#" @click.prevent="addRow(sec.name)">Добавить размещение</a></td></tr>
+      </tbody>
+      <tfoot><tr class="mp-total"><td class="sticky0"></td><td class="sticky1"><b>Итого</b></td><td colspan="4"></td><td class="num">{{ tot.audience ? shortNum(tot.audience) : '' }}</td><td class="num">{{ tot.reach ? shortNum(tot.reach) : '' }}</td><td class="num">{{ tot.cpv ? tot.cpv.toFixed(1) : '' }}</td>
+        <td v-if="internal"></td><td v-if="internal" class="num">{{ money(tot.cost) }}</td>
+        <td class="num">{{ money(merge ? tot.net : tot.price) }}</td>
+        <template v-if="!merge"><td class="num">{{ money(tot.tax) }}</td><td class="num">{{ money(tot.bank) }}</td><td class="num">{{ money(tot.ak) }}</td><td class="num">{{ money(tot.log) }}</td></template>
+        <td class="num"><b>{{ money(tot.total) }}</b></td>
+        <td v-if="internal" class="num mp-income"><b>{{ money(tot.income) }}</b></td><td v-if="internal"></td>
+        <td v-if="showText" colspan="3"></td><td v-if="internal" colspan="3"></td></tr></tfoot>
+    </table>
+  </div>
+  <div v-if="internal" class="row wrap" style="margin-top:12px">
+    <input class="input" style="max-width:260px" v-model="newSection" placeholder="Новый блок: «РК», «Запуск»…" @keydown.enter="addSection" aria-label="Новый блок">
+    <button class="btn" :disabled="!newSection.trim()" @click="addSection"><Ic n="plus"/> Блок</button>
+  </div>
+  <datalist id="mk-mp-outlets"><option v-for="n in outletNames" :key="n" :value="n"></option></datalist>
+  <datalist id="mk-mp-platforms"><option v-for="n in platforms" :key="n" :value="n"></option></datalist>
+  <label class="field" style="margin-top:16px"><span>Заметки к медиаплану (видны только своим)</span><textarea class="textarea" :value="p.note" @change="savePlan({note: $event.target.value.trim() || null})"></textarea></label>
+</div>
+<div v-else class="empty">Медиаплан не найден. <a href="#" @click.prevent="go('mplans')">К списку</a></div>`,
+  };
+  MediaPlanView.methods.shortNum = shortNum;
+
+  // ---------- Excel: выгрузка с живыми формулами ----------
+  async function mpExport(p, internal) {
+    await loadXlsx();
+    const s = mpSettings(p), merge = !internal && s.merge, k = 1 + (+s.season || 0) / 100;
+    const cl = p.client_id ? ix().clientById.get(p.client_id) : null;
+    const head = ['Блок', '№', 'Площадка', 'Media / KOL', 'ЦА', 'Tier', 'Формат', 'Посещаемость / подписчики', 'Охват (прогноз)', 'CPV'];
+    if (internal) head.push('Тип', 'Закупка');
+    if (merge) head.push('Стоимость'); else head.push('Цена площадки' + (s.season ? ' (с сезонным коэф. +' + s.season + '%)' : ''), 'Налог ' + s.tax + '%', 'Комиссия банка ' + s.bank + '%', 'Агентская комиссия ' + s.ak + '%', 'Логистика');
+    head.push('Итоговая цена (с НДС ' + s.vat + '%)');
+    if (internal) head.push('Наш доход', 'Статус');
+    head.push('Обоснование', 'Пример', 'Комментарий');
+    if (internal) head.push('Ссылка на выход', 'Факт. охват', 'Заметка');
+    const C = {}; head.forEach((h, i) => { C[h.split(' (')[0].split(' ').slice(0, 2).join(' ')] = i; });
+    const col = i => XLSX.utils.encode_col(i);
+    const iPrice = merge ? head.indexOf('Стоимость') : head.findIndex(h => h.startsWith('Цена площадки'));
+    const iTax = iPrice + 1, iBank = iPrice + 2, iAk = iPrice + 3, iLog = iPrice + 4, iTot = merge ? iPrice + 1 : iPrice + 5;
+    const iReach = 8, iCpv = 9;
+    const vatK = 1 + (+s.vat || 0) / 100, f2 = x => +(+x).toFixed(4);
+    const aoa = [[p.title + (cl ? ' · ' + cl.name : '') + (p.period ? ' · ' + p.period : '')], [], head];
+    const formulas = [];
+    const totalCells = [];
+    let n = 0;
+    for (const secName of mpSections(p)) {
+      const rows = mpRowsOf(p.id).filter(r => (r.section || '') === secName && (internal || r.status !== 'declined')).sort((a, b) => a.sort - b.sort || a.id - b.id);
+      if (!rows.length) continue;
+      const first = aoa.length;
+      rows.forEach((r, ri) => {
+        const c = mpCalc(r, s), R = aoa.length + 1, line = new Array(head.length).fill('');
+        line[0] = ri === 0 ? (secName || '') : ''; line[1] = ++n; line[2] = r.platform || ''; line[3] = r.name || ''; line[4] = r.target || ''; line[5] = r.tier ? (num(r.tier) ?? r.tier) : '';
+        line[6] = r.format || ''; line[7] = num(r.audience) ?? ''; line[8] = num(r.reach) ?? (r.reach_text || '');
+        if (internal) { line[10] = MP_CALC[r.calc]; line[11] = r.calc === 'barter' ? '—' : Math.round(c.cost); }
+        const fx = [];
+        if (merge) {
+          line[iPrice] = Math.round(c.net); fx.push([iTot, `${col(iPrice)}${R}*${f2(vatK)}`]);
+        } else if (r.calc === 'barter') {
+          line[iPrice] = 'Бартер'; line[iTax] = '-'; line[iBank] = '-'; line[iAk] = Math.round(c.ak); line[iLog] = c.log || 0;
+          fx.push([iTot, `(${col(iAk)}${R}+${col(iLog)}${R})*${f2(vatK)}`]);
+        } else if (r.calc === 'service') {
+          line[iPrice] = Math.round(c.price); line[iTax] = '-'; line[iBank] = '-'; line[iAk] = Math.round(c.ak); line[iLog] = c.log || 0;
+          fx.push([iTot, `(${col(iPrice)}${R}+${col(iAk)}${R}+${col(iLog)}${R})*${f2(vatK)}`]);
+        } else {
+          line[iPrice] = Math.round(c.price * 100) / 100; line[iLog] = c.log || 0;
+          fx.push([iTax, `${col(iPrice)}${R}*${f2(s.tax / 100)}`], [iBank, `${col(iPrice)}${R}*${f2(s.bank / 100)}`]);
+          if (num(r.ak_fixed) != null) line[iAk] = num(r.ak_fixed); else fx.push([iAk, `${col(iPrice)}${R}*${f2((num(r.ak_pct) ?? s.ak) / 100)}`]);
+          fx.push([iTot, `(${col(iPrice)}${R}+${col(iTax)}${R}+${col(iBank)}${R}+${col(iAk)}${R}+${col(iLog)}${R})*${f2(vatK)}`]);
+        }
+        if (c.cpv && typeof line[8] === 'number' && !merge) fx.push([iCpv, `IFERROR(${col(iPrice)}${R}/${col(iReach)}${R},"-")`]); else line[iCpv] = c.cpv ? +c.cpv.toFixed(2) : '-';
+        for (const [i, f] of fx) { line[i] = 0; formulas.push([R, i, f, i === iTot ? c.total : i === iTax ? c.tax : i === iBank ? c.bank : i === iAk ? c.ak : i === iCpv ? c.cpv : 0]); }
+        if (internal) { line[iTot + 1] = Math.round(c.income); line[iTot + 2] = MPR_STATUS[r.status]; }
+        const t0 = iTot + (internal ? 3 : 1);
+        line[t0] = r.reasoning || ''; line[t0 + 1] = r.example || ''; line[t0 + 2] = r.comment || '';
+        if (internal) { line[t0 + 3] = r.pub_url || ''; line[t0 + 4] = num(r.fact_reach) ?? ''; line[t0 + 5] = r.internal_note || ''; }
+        aoa.push(line);
+      });
+      const last = aoa.length, R = aoa.length + 1, line = new Array(head.length).fill('');
+      line[0] = 'Итого: ' + (secName || 'без блока'); line[iTot] = 0;
+      formulas.push([R, iTot, internal ? `SUMIF(${col(iTot + 2)}${first + 1}:${col(iTot + 2)}${last},"<>отказ",${col(iTot)}${first + 1}:${col(iTot)}${last})` : `SUM(${col(iTot)}${first + 1}:${col(iTot)}${last})`, mpSum(rows, s).total]);
+      totalCells.push(`${col(iTot)}${R}`);
+      aoa.push(line); aoa.push([]);
+    }
+    const R = aoa.length + 1, tl = new Array(head.length).fill(''); tl[0] = 'ИТОГО ПО МЕДИАПЛАНУ'; tl[iTot] = 0;
+    formulas.push([R, iTot, totalCells.length ? totalCells.join('+') : '0', mpSum(mpRowsOf(p.id).filter(r => internal || r.status !== 'declined'), s).total]);
+    aoa.push(tl);
+    if (internal) { const t = mpSum(mpRowsOf(p.id), s); aoa.push([], ['Закупка', Math.round(t.cost)], ['Наш доход (АК + наценка)', Math.round(t.income)], ['Маржа от суммы без НДС', t.net ? +(t.income / t.net).toFixed(4) : 0]); }
+    aoa.push([], ['Расчёт: налог ' + s.tax + '%, комиссия банка ' + s.bank + '%, агентская комиссия ' + s.ak + '%, НДС ' + s.vat + '%' + (s.season ? ', сезонный коэффициент +' + s.season + '%' : '') + '. Бартер: АК ' + money(s.barter_fee) + ' ₽ + логистика.']);
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    for (const [R2, i, f, v] of formulas) { const a = col(i) + R2; ws[a] = { t: 'n', f, v: v == null ? 0 : v }; }
+    const moneyCols = [iPrice, iTax, iBank, iAk, iLog, iTot].concat(internal ? [11, iTot + 1] : []);
+    const range = XLSX.utils.decode_range(ws['!ref']);
+    for (let r = 3; r <= range.e.r; r++) for (const i of moneyCols) { const a = col(i) + (r + 1); if (ws[a] && ws[a].t === 'n') ws[a].z = '# ##0'; }
+    for (let r = 3; r <= range.e.r; r++) { const a = col(iCpv) + (r + 1); if (ws[a] && ws[a].t === 'n') ws[a].z = '0.0'; }
+    ws['!cols'] = head.map((h, i) => ({ wch: i === 0 ? 14 : i === 1 ? 4 : /Обоснование|Пример|Комментарий|Заметка|Ссылка/.test(h) ? 40 : i === 3 ? 26 : 14 }));
+    ws['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 8 } }];
+    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, (internal ? 'Внутренний' : 'Медиаплан').slice(0, 31));
+    XLSX.writeFile(wb, (p.title + (internal ? ' — внутренний' : '') + '.xlsx').replace(/[\\/:*?"<>|]/g, ''));
+  }
+
+  // ---------- Excel: импорт готового медиаплана ----------
+  function mpParseSheet(rows) {
+    const hi = rows.findIndex(r => r.some(v => /media\s*\/\s*kol|^сми$/i.test(String(v).trim())) && r.some(v => /цена|стоим/i.test(String(v))));
+    if (hi < 0) return null;
+    const H = rows[hi].map(v => String(v || '').toLowerCase().trim());
+    const f = re => H.findIndex(h => re.test(h));
+    const C = { sec: 0, platform: f(/^площадка$|^type$/), name: f(/media\s*\/\s*kol|^сми$/), target: f(/^ца$/), tier: f(/^tier/), format: f(/^формат/), address: f(/^адрес/),
+      audience: f(/посещаем|подписч/), reach: f(/охват|прогноз/), price: f(/^цена|^стоим/), tax: f(/^налог/), bank: f(/банк/), ak: f(/агентск|^ак\b/), log: f(/логист/),
+      total: f(/итог/), reasoning: f(/обоснован/), example: f(/пример/), comment: f(/коммент/) };
+    if (C.name < 0 || C.price < 0) return null;
+    const secCol = H[0] === '' || H[0] === 'null' ? 0 : -1;
+    const g = (r, i) => i < 0 ? '' : r[i];
+    const out = []; let sec = ''; let excelTotal = null;
+    for (const r of rows.slice(hi + 1)) {
+      const a = secCol === 0 ? String(r[0] || '').trim() : '';
+      const name = String(g(r, C.name) || '').trim();
+      if (/^итог/i.test(a) || /^итог/i.test(String(r[0] || '').trim())) { const t = num(g(r, C.total)); if (t) excelTotal = (excelTotal || 0) + t; continue; }
+      if (a && name) sec = a;
+      const priceRaw = g(r, C.price), price = num(priceRaw), ak = num(g(r, C.ak)), log = num(g(r, C.log)), tot = num(g(r, C.total));
+      if (!name) {
+        if (!a || /^итог/i.test(a)) continue;
+        if (!price && !ak && !tot) { sec = a; continue; }
+        out.push({ section: sec || 'Услуги', calc: 'service', name: a, format: String(g(r, C.format) || '').trim() || null, client_price: price ?? (ak || log ? null : (tot ? Math.round(tot / 1.22) : null)), ak_fixed: ak, logistics: log });
+        continue;
+      }
+      const reachRaw = String(g(r, C.reach) ?? '').trim();
+      const row = { section: sec || null, platform: String(g(r, C.platform) || '').trim() || null, name: name.replace(/\s+/g, ' '), target: String(g(r, C.target) || '').trim() || null,
+        tier: String(g(r, C.tier) ?? '').trim().replace(/^-$/, '') || null, format: String(g(r, C.format) || '').trim() || null, address: String(g(r, C.address) || '').trim() || null,
+        audience: num(g(r, C.audience)) != null ? Math.round(num(g(r, C.audience))) : null,
+        reach: reachRaw ? Math.round(num(reachRaw.split(/[-–]/)[0]) || 0) || null : null, reach_text: /\d\s*[-–]\s*\d/.test(reachRaw) ? reachRaw : null,
+        logistics: log, reasoning: String(g(r, C.reasoning) || '').trim() || null, example: String(g(r, C.example) || '').trim() || null, comment: String(g(r, C.comment) || '').trim() || null };
+      if (/бартер/i.test(String(priceRaw))) { row.calc = 'barter'; row.ak_fixed = ak ?? 0; }
+      else if (price == null && (ak || log)) { row.calc = 'barter'; row.ak_fixed = ak ?? 0; }
+      else { row.calc = 'full'; row.client_price = price; if (price && ak != null && Math.abs(ak - price * 0.15) > 1) row.ak_fixed = ak; }
+      out.push(row);
+    }
+    return { rows: out, excelTotal };
+  }
+
+  const MpImport = {
+    mixins: [helpers], props: { m: Object },
+    data: () => ({ sheets: null, pick: '', title: '', client: '', err: '', busy: false, fileName: '' }),
+    computed: {
+      cur() { return this.sheets && this.sheets.find(x => x.name === this.pick); },
+      calc() { if (!this.cur) return null; const s = MP_DEFAULTS; return mpSum(this.cur.rows.map(r => Object.assign({ status: 'idea' }, r)), s); },
+      clients() { S.rev; return D.clients.map(c => c.name); },
+    },
+    methods: {
+      money, close() { S.modal = null; },
+      async file(ev) {
+        const f = ev.target.files[0]; if (!f) return; this.err = ''; this.fileName = f.name;
+        try {
+          await loadXlsx(); const wb = XLSX.read(await f.arrayBuffer(), { type: 'array' });
+          this.sheets = wb.SheetNames.map(n => { const p = mpParseSheet(XLSX.utils.sheet_to_json(wb.Sheets[n], { header: 1, defval: '', raw: true })); return p && p.rows.length ? Object.assign({ name: n }, p) : null; }).filter(Boolean);
+          if (!this.sheets.length) { this.err = 'Не нашли листов с медиапланом: нужны колонки «Media / KOL» и «Цена площадки».'; return; }
+          this.pick = this.sheets[0].name; this.title = f.name.replace(/\.xlsx?$/i, '').replace(/^Медиаплан[_\s]*/i, 'Медиаплан ').replace(/_/g, ' ').trim();
+        } catch (e) { this.err = e.message; }
+      },
+      async load() {
+        this.busy = true;
+        try {
+          let cl = null; const cn = this.client.trim();
+          if (cn) { cl = D.clients.find(c => norm(c.name) === norm(cn)); if (!cl) { cl = await api.insert('clients', { name: cn }); D.clients.push(cl); } }
+          const secs = [...new Set(this.cur.rows.map(r => r.section || ''))].filter(Boolean);
+          const p = await api.insert('media_plans', { title: (this.title || this.pick).trim(), client_id: cl ? cl.id : null, settings: MP_DEFAULTS, sections: secs, note: 'Импорт из «' + this.fileName + '», лист «' + this.pick + '»' });
+          const counters = {};
+          const rows = this.cur.rows.map(r => { const k = r.section || ''; counters[k] = (counters[k] || 0) + 1; const o = r.name && r.calc !== 'service' ? D.outlets.find(x => norm(x.name) === norm(r.name.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, ''))) : null;
+            return Object.assign({ plan_id: p.id, sort: counters[k], status: 'idea', outlet_id: o ? o.id : null }, r); });
+          const made = await api.insertRows('media_plan_rows', rows);
+          D.mplans.push(p); D.mprows = markRaw(D.mprows.concat(made)); rebuildIndex(); bump(); S.modal = null; go('mplan', { mplanId: p.id });
+          toast('Загружено строк: ' + made.length);
+        } catch (e) { this.err = e.message; } finally { this.busy = false; }
+      },
+    },
+    template: `
+<div class="modal-back" @click.self="close"><div class="modal" style="max-width:640px">
+  <h3>Импорт медиаплана из Excel</h3>
+  <div class="muted small">Подойдёт ваш привычный формат: колонки «Площадка», «Media / KOL», «ЦА», «Tier», «Формат», «Посещаемость», «Охват», «Цена площадки», «Агентская комиссия», «Логистика», «Обоснование», «Пример», «Комментарий». Блоки («Запуск», «РК») возьмём из первой колонки, бартер распознаем.</div>
+  <input type="file" accept=".xlsx,.xls" @change="file" aria-label="Файл Excel">
+  <div v-if="err" class="banner">{{ err }}</div>
+  <template v-if="sheets && sheets.length">
+    <label class="field"><span>Лист</span><select class="select" v-model="pick"><option v-for="s in sheets" :key="s.name" :value="s.name">{{ s.name }} · {{ s.rows.length }} строк</option></select></label>
+    <div class="grid2">
+      <label class="field"><span>Название медиаплана</span><input class="input" v-model="title"></label>
+      <label class="field"><span>Клиент</span><input class="input" v-model="client" list="mk-mpi-clients"></label>
+      <datalist id="mk-mpi-clients"><option v-for="n in clients" :key="n" :value="n"></option></datalist>
+    </div>
+    <div v-if="calc" class="comment-box small">Строк: <b>{{ cur.rows.length }}</b> · блоки: {{ [...new Set(cur.rows.map(r => r.section || 'без блока'))].join(', ') }}<br>
+      Итог по нашему расчёту: <b>{{ money(calc.total) }} ₽</b><template v-if="cur.excelTotal"> · в файле: <b>{{ money(cur.excelTotal) }} ₽</b>
+      <span v-if="Math.abs(calc.total - cur.excelTotal) < 5" style="color:var(--ok, #1a7f37)"> — сходится ✓</span><span v-else class="muted"> — расходится на {{ money(Math.abs(calc.total - cur.excelTotal)) }} ₽: в файле есть строки или формулы не по стандартной схеме, проверьте после загрузки</span></template></div>
+  </template>
+  <div class="foot"><button class="btn ghost" @click="close">Отмена</button><button class="btn primary" :disabled="!cur || busy" @click="load">Загрузить</button></div>
+</div></div>`,
+  };
+  window.MK_MP = { calc: mpCalc, sum: mpSum, parse: mpParseSheet };
+
   // ====================== 2.0 · ВСТАВКА ГОСТЕЙ ИЗ ТАБЛИЦЫ ======================
   // Разбор того, что копирует Google Таблицы / Excel: строки через \n, ячейки через \t, многострочные ячейки в кавычках
   function parseTSV(text) {
@@ -3487,7 +4031,7 @@
   // ====================== КОРЕНЬ ======================
   const Root = {
     components: { Login, Nav, MapView, ContactDrawer, OutletDrawer, ContactForm, OutletForm, CampaignForm, AddToCampaign, Picker, CampaignsView, CampaignView, PoolView, DashView, SettingsView, AdminView, MoveModal, BulkEdit,
-      ClientsView, ClientView, MailingsView, MailingView, ListForm, AddToList, VerifyView, ReportView, AnalyticsView, EventsView, EventView, EventForm, AddToEvent, ExpertsView, ExpertCard, ExpertForm, ExpertImport, GuestImport },
+      ClientsView, ClientView, MailingsView, MailingView, ListForm, AddToList, VerifyView, ReportView, AnalyticsView, EventsView, EventView, EventForm, AddToEvent, ExpertsView, ExpertCard, ExpertForm, ExpertImport, GuestImport, MediaPlansView, MediaPlanView, MpImport },
     computed: { s: () => S },
     mounted() {
       boot();
@@ -3559,6 +4103,8 @@
     <EventsView v-else-if="s.view==='events'" />
     <EventView v-else-if="s.view==='event'" :key="'ev' + s.eventId" />
     <ExpertsView v-else-if="s.view==='experts'" />
+    <MediaPlansView v-else-if="s.view==='mplans'" />
+    <MediaPlanView v-else-if="s.view==='mplan'" :key="'mp' + s.mplanId" />
   </main>
   <div class="drawer-wrap" v-if="s.drawer">
     <ContactDrawer v-if="s.drawer.kind==='contact'" :id="s.drawer.id" :key="'c' + s.drawer.id" />
@@ -3579,6 +4125,7 @@
   <ExpertForm v-if="s.modal && s.modal.kind==='expertForm'" :m="s.modal" />
   <ExpertImport v-if="s.modal && s.modal.kind==='expertImport'" :m="s.modal" />
   <GuestImport v-if="s.modal && s.modal.kind==='guestImport'" :m="s.modal" />
+  <MpImport v-if="s.modal && s.modal.kind==='mpImport'" :m="s.modal" />
 </div>
 <div v-if="s.toast" class="toast" role="status">{{ s.toast }}</div>`,
   };
